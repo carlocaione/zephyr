@@ -480,3 +480,10 @@ int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 
 	return 0;
 }
+
+#ifdef CONFIG_USERSPACE
+int arch_mem_domain_max_partitions_get(void)
+{
+	return CONFIG_MAX_DOMAIN_PARTITIONS;
+}
+#endif
