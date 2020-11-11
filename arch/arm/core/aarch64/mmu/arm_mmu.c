@@ -56,8 +56,15 @@ static int pte_desc_type(uint64_t *pte)
 	return *pte & PTE_DESC_TYPE_MASK;
 }
 
+static bool pte_is_page_or_block(uint64_t *pte, unsigned int level)
+{
+	return ((pte_desc_type(pte) == PTE_BLOCK_DESC) ||
+		(pte_desc_type(pte) == PTE_PAGE_DESC &&
+		   level == (XLAT_LEVEL_MAX - 1)));
+}
+
 static uint64_t *calculate_pte_index(struct arm_mmu_ptables *ptables,
-				     uintptr_t addr, unsigned int level)
+				     uintptr_t addr, int level)
 {
 	int base_level = BASE_XLAT_LEVEL;
 	uint64_t *pte;
@@ -70,9 +77,13 @@ static uint64_t *calculate_pte_index(struct arm_mmu_ptables *ptables,
 		idx = XLAT_TABLE_VA_IDX(addr, i);
 		pte += idx;
 
+		if (level == -1 && pte_is_page_or_block(pte, i))
+			return pte;
+
 		/* Found pte index */
 		if (i == level)
 			return pte;
+
 		/* if PTE is not table desc, can't traverse */
 		if (pte_desc_type(pte) != PTE_TABLE_DESC)
 			return NULL;
@@ -482,6 +493,49 @@ int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 }
 
 #ifdef CONFIG_USERSPACE
+static bool page_validate(struct arm_mmu_ptables *ptables, uintptr_t addr,
+			  bool write)
+{
+	uint64_t *pte;
+
+	pte = calculate_pte_index(ptables, addr, -1);
+
+	if (pte == NULL)
+		return false;
+
+	if (!(*pte & PTE_BLOCK_DESC_AP_ELx))
+		return false;
+
+	if (write && ((*pte & PTE_BLOCK_DESC_AP_RO)))
+		return false;
+
+	return true;
+}
+
+int arch_buffer_validate(void *addr, size_t size, int write)
+{
+	struct arm_mmu_ptables *ptables;
+	size_t aligned_size;
+	uintptr_t virt;
+	int ret = 0;
+
+	/* Always map in the kernel page tables */
+	ptables = &kernel_ptables;
+
+	k_mem_region_align(&virt, &aligned_size, (uintptr_t)addr,
+			   size, CONFIG_MMU_PAGE_SIZE);
+
+	for (size_t offset = 0; offset < aligned_size;
+	     offset += CONFIG_MMU_PAGE_SIZE) {
+		if (!page_validate(ptables, virt + offset, write)) {
+			ret = -1;
+			break;
+		}
+	}
+
+	return ret;
+}
+
 int arch_mem_domain_max_partitions_get(void)
 {
 	return CONFIG_MAX_DOMAIN_PARTITIONS;
