@@ -62,6 +62,9 @@ config MMU_PAGE_SIZE
 config PRIVILEGED_STACK_SIZE
 	default 4096
 
+config KOBJECT_TEXT_AREA
+	default 512
+
 if CPU_CORTEX_A
 
 config ARMV8_A_NS
