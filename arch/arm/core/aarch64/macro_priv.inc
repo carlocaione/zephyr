@@ -43,6 +43,17 @@
 	stp	x16, x17, [sp, ___esf_t_x16_x17_OFFSET]
 	stp	x18, x30, [sp, ___esf_t_x18_x30_OFFSET]
 
+#ifdef CONFIG_USERSPACE
+	/* Save the current kernel/user mode in the context */
+	mrs	\xreg0, tpidrro_el0
+	stp	\xreg0, xzr, [sp, ___esf_t_tpidrro_el0_OFFSET]
+
+
+	/* Switch TPIDRRO_EL0 to kernel mode */
+	mov     \xreg0, #0
+	msr	tpidrro_el0, \xreg0
+#endif
+
 	mrs	\xreg0, spsr_el1
 	mrs	\xreg1, elr_el1
 	stp	\xreg0, \xreg1, [sp, ___esf_t_spsr_elr_OFFSET]
@@ -58,6 +69,12 @@
 	ldp	\xreg0, \xreg1, [sp, ___esf_t_spsr_elr_OFFSET]
 	msr	spsr_el1, \xreg0
 	msr	elr_el1, \xreg1
+
+#ifdef CONFIG_USERSPACE
+	/* Restore the kernel/user mode */
+	ldp	\xreg0, xzr, [sp, ___esf_t_tpidrro_el0_OFFSET]
+	msr	tpidrro_el0, \xreg0
+#endif
 
 	ldp	x18, x30, [sp, ___esf_t_x18_x30_OFFSET]
 	ldp	x16, x17, [sp, ___esf_t_x16_x17_OFFSET]
