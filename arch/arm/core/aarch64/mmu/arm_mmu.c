@@ -12,10 +12,16 @@
 #include <arch/arm/aarch64/arm_mmu.h>
 #include <linker/linker-defs.h>
 #include <sys/util.h>
+#include <sys/slist.h>
 
 #include "arm_mmu.h"
 
-static uint64_t kernel_xlat_tables[CONFIG_MAX_XLAT_TABLES * Ln_XLAT_NUM_ENTRIES]
+#ifdef CONFIG_USERSPACE
+static sys_slist_t domain_list;
+#endif
+
+/* kernel ptables created at MMU init time */
+static uint64_t kernel_xlat_tables[PTABLES_SIZE]
 		__aligned(Ln_XLAT_NUM_ENTRIES * sizeof(uint64_t));
 
 static struct arm_mmu_ptables kernel_ptables = {
@@ -236,10 +242,11 @@ static void split_pte_block_desc(struct arm_mmu_ptables *ptables, uint64_t *pte,
 	set_pte_table_desc(pte, new_table, level);
 }
 
-static void add_map(struct arm_mmu_ptables *ptables, const char *name,
-		    uintptr_t phys, uintptr_t virt, size_t size, uint32_t attrs)
+static void add_map_with_desc(struct arm_mmu_ptables *ptables, const char *name,
+			      uintptr_t phys, uintptr_t virt, size_t size,
+			      uint64_t desc)
 {
-	uint64_t desc, *pte;
+	uint64_t *pte;
 	uint64_t level_size;
 	uint64_t *new_table;
 	unsigned int level = BASE_XLAT_LEVEL;
@@ -251,8 +258,6 @@ static void add_map(struct arm_mmu_ptables *ptables, const char *name,
 	__ASSERT(((virt & (CONFIG_MMU_PAGE_SIZE - 1)) == 0) &&
 		 ((size & (CONFIG_MMU_PAGE_SIZE - 1)) == 0),
 		 "address/size are not page aligned\n");
-
-	desc = get_region_desc(attrs);
 
 	while (size) {
 		__ASSERT(level < XLAT_LEVEL_MAX,
@@ -290,6 +295,13 @@ static void add_map(struct arm_mmu_ptables *ptables, const char *name,
 		} else if (pte_desc_type(pte) == PTE_TABLE_DESC)
 			level++;
 	}
+}
+
+static void add_map(struct arm_mmu_ptables *ptables, const char *name,
+		    uintptr_t phys, uintptr_t virt, size_t size, uint32_t attrs)
+{
+	add_map_with_desc(ptables, name, phys, virt, size,
+			  get_region_desc(attrs));
 }
 
 /* zephyr execution regions with appropriate attributes */
@@ -489,6 +501,25 @@ int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 
 	add_map(ptables, "generic", phys, (uintptr_t)virt, size, entry_flags);
 
+#ifdef CONFIG_USERSPACE
+	/*
+	 * All virtual-to-physical mappings are the same in all page tables in
+	 * each domain
+	 */
+	sys_snode_t *node;
+
+	SYS_SLIST_FOR_EACH_NODE(&domain_list, node) {
+		struct arm_mmu_ptables *domain_ptables;
+		struct arch_mem_domain *domain;
+
+		domain = CONTAINER_OF(node, struct arch_mem_domain, node);
+		domain_ptables = &domain->ptables;
+
+		add_map(domain_ptables, "generic", phys, (uintptr_t)virt,
+			size, entry_flags);
+	}
+#endif
+
 	return 0;
 }
 
@@ -519,8 +550,7 @@ int arch_buffer_validate(void *addr, size_t size, int write)
 	uintptr_t virt;
 	int ret = 0;
 
-	/* Always map in the kernel page tables */
-	ptables = &kernel_ptables;
+	ptables = _current->arch.ptables;
 
 	k_mem_region_align(&virt, &aligned_size, (uintptr_t)addr,
 			   size, CONFIG_MMU_PAGE_SIZE);
@@ -540,4 +570,197 @@ int arch_mem_domain_max_partitions_get(void)
 {
 	return CONFIG_MAX_DOMAIN_PARTITIONS;
 }
-#endif
+
+static void map_thread_stack(struct k_thread *thread,
+			     struct arm_mmu_ptables *ptables)
+{
+	add_map(ptables, "thread_stack", thread->stack_info.start,
+		thread->stack_info.start, thread->stack_info.size,
+		MT_P_RW_U_RW | MT_NORMAL);
+}
+
+/*
+ * Duplicate the set of page tables
+ *
+ * Recursively copy the page tables starting from level. Page and block entries
+ * are directly copied while the tables are copied recursively updating the
+ * table pointer
+ */
+static void copy_page_table(struct arm_mmu_ptables *dst_pt,
+			    struct arm_mmu_ptables *src_pt,
+			    uint64_t *dst_xlat, uint64_t *src_xlat, int level)
+{
+	if (level == BASE_XLAT_LEVEL) {
+		/* It's a brand new set. Reset the table counter */
+		dst_pt->next_table = 0;
+	}
+
+	if (level == 3) {
+		for (int i = 0; i < Ln_XLAT_NUM_ENTRIES; i++) {
+			*(dst_xlat + i) = *(src_xlat + i);
+		}
+	} else {
+		for (int i = 0; i < Ln_XLAT_NUM_ENTRIES; i++) {
+			uint64_t *src_pte, *dst_pte;
+			int src_pte_type;
+
+			src_pte = src_xlat + i;
+			dst_pte = dst_xlat + i;
+
+			src_pte_type = pte_desc_type(src_pte);
+
+			if (src_pte_type == PTE_INVALID_DESC ||
+			    src_pte_type == PTE_BLOCK_DESC) {
+				*dst_pte = *src_pte;
+				continue;
+			}
+
+			if (src_pte_type == PTE_TABLE_DESC) {
+				uint64_t *src_table, *dst_table;
+
+				src_table = (uint64_t *)
+					    (*src_pte & 0x0000fffffffff000ULL);
+				dst_table = new_prealloc_table(dst_pt);
+
+				set_pte_table_desc(dst_pte, dst_table, level);
+
+				copy_page_table(dst_pt, src_pt, dst_table,
+						src_table, level + 1);
+			}
+		}
+	}
+}
+
+static void reset_map(struct arm_mmu_ptables *ptables, uintptr_t addr,
+		      size_t size)
+{
+	size_t aligned_size;
+	uint64_t *pte, desc;
+	uintptr_t virt;
+
+	/* There is no way (yet) to cleanly un-apply memory partitions from the
+	 * domain page tables. Instead we look up the attributes of the
+	 * original set of kernel page tables and we map the page with this
+	 * original attributes
+	 */
+	k_mem_region_align(&virt, &aligned_size, addr, size,
+			   CONFIG_MMU_PAGE_SIZE);
+
+	for (size_t offset = 0; offset < aligned_size;
+	     offset += CONFIG_MMU_PAGE_SIZE) {
+		addr = virt + offset;
+
+		/* Retrieve the original page attributes from the kernel
+		 * ptables
+		 */
+		pte = calculate_pte_index(&kernel_ptables, addr, -1);
+
+		desc = get_region_desc_from_pte(pte);
+
+		/* Re-apply the original attributes to the page in the domain
+		 * ptables
+		 */
+		add_map_with_desc(ptables, "partition", addr, addr,
+				  CONFIG_MMU_PAGE_SIZE, desc);
+
+	}
+}
+
+void arch_mem_domain_partition_remove(struct k_mem_domain *domain,
+				      uint32_t partition_id)
+{
+	struct arm_mmu_ptables *domain_ptables;
+	struct k_mem_partition *ptn;
+
+	domain_ptables = &domain->arch.ptables;
+
+	ptn = &domain->partitions[partition_id];
+
+	reset_map(domain_ptables, ptn->start, ptn->size);
+}
+
+void arch_mem_domain_partition_add(struct k_mem_domain *domain,
+				   uint32_t partition_id)
+{
+	struct arm_mmu_ptables *domain_ptables;
+	struct k_mem_partition *ptn;
+
+	domain_ptables = &domain->arch.ptables;
+
+	ptn = &domain->partitions[partition_id];
+
+	add_map(domain_ptables, "partition", ptn->start, ptn->start,
+		ptn->size, ptn->attr.attrs | MT_NORMAL);
+
+}
+
+void arch_mem_domain_thread_add(struct k_thread *thread)
+{
+	struct arm_mmu_ptables *old_ptables, *domain_ptables;
+	struct k_mem_domain *domain;
+	bool is_user, is_migration;
+
+	domain = thread->mem_domain_info.mem_domain;
+	domain_ptables = &domain->arch.ptables;
+	old_ptables = thread->arch.ptables;
+
+	is_user = (thread->base.user_options & K_USER) != 0;
+	is_migration = (old_ptables != NULL) && is_user;
+
+	if (is_migration) {
+		map_thread_stack(thread, domain_ptables);
+
+	}
+
+	thread->arch.ptables = domain_ptables;
+
+	if (is_migration) {
+		reset_map(old_ptables, thread->stack_info.start,
+			  thread->stack_info.size);
+	}
+}
+
+int arch_mem_domain_init(struct k_mem_domain *domain)
+{
+	struct arm_mmu_ptables *domain_ptables;
+
+	/* Initialize the domain ptables struct */
+	domain_ptables = &domain->arch.ptables;
+	domain_ptables->xlat_tables = domain->arch.xlat_tables;
+
+	/* Copy the kernel page tables created at MMU init time */
+	copy_page_table(domain_ptables, &kernel_ptables,
+			domain_ptables->xlat_tables,
+			kernel_ptables.xlat_tables, BASE_XLAT_LEVEL);
+
+	sys_slist_append(&domain_list, &domain->arch.node);
+
+	return 0;
+}
+
+void arch_mem_domain_thread_remove(struct k_thread *thread)
+{
+	struct arm_mmu_ptables *domain_ptables;
+	struct k_mem_domain *domain;
+
+	domain = thread->mem_domain_info.mem_domain;
+	domain_ptables = &domain->arch.ptables;
+
+	if ((thread->base.user_options & K_USER) == 0) {
+		return;
+	}
+
+	if ((thread->base.thread_state & _THREAD_DEAD) == 0) {
+		return;
+	}
+
+	reset_map(domain_ptables, thread->stack_info.start,
+		  thread->stack_info.size);
+}
+
+void arch_mem_domain_destroy(struct k_mem_domain *domain)
+{
+	/* Empty */
+}
+
+#endif /* CONFIG_USERSPACE */

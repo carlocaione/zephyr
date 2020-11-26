@@ -7,6 +7,12 @@
 #ifndef ZEPHYR_INCLUDE_ARCH_ARM64_MMU_ARM_MMU_H_
 #define ZEPHYR_INCLUDE_ARCH_ARM64_MMU_ARM_MMU_H_
 
+/* This is a fixed value for a 4KB granule size and 48-bit VA. The original
+ * calculation is done in arch/arm/core/aarch64/mmu/arm_mmu.h
+ */
+#define XLAT_NUM_ENTRIES	(1U << 9U)
+#define PTABLES_SIZE		(CONFIG_MAX_XLAT_TABLES * XLAT_NUM_ENTRIES)
+
 /* Following Memory types supported through MAIR encodings can be passed
  * by user through "attrs"(attributes) field of specified memory region.
  * As MAIR supports such 8 encodings, we will reserve attrs[2:0];
