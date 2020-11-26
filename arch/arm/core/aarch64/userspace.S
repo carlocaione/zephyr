@@ -136,3 +136,42 @@ GTEXT(z_arm64_userspace_enter)
 SECTION_FUNC(TEXT, z_arm64_userspace_enter)
 	mov sp, x0
 	z_arm64_exit_exc x0, x1
+
+
+/*
+ * Invalidate all TLB entries
+ */
+
+GTEXT(z_arm64_invalidate_tlb_all)
+SECTION_FUNC(TEXT, z_arm64_invalidate_tlb_all)
+	tlbi	vmalle1
+	dsb	sy
+	isb
+	ret
+
+/*
+ * Switch TTBR0
+ */
+
+GTEXT(z_arm64_set_ttbr0)
+SECTION_FUNC(TEXT, z_arm64_set_ttbr0)
+	/* Disable all the caches */
+	mrs	x2, sctlr_el1
+	mov_imm	x1, (SCTLR_M | SCTLR_C | SCTLR_I)
+	and	x1, x2, x1
+	msr	sctlr_el1, x1
+	isb
+
+	/* Invalidate the TLBs */
+	mov	x3, x30
+	bl	z_arm64_invalidate_tlb_all
+
+	/* Switch the TTBR0 */
+	msr	ttbr0_el1, x0
+	isb
+
+	/* Restore the saved SCTLR_EL1 */
+	msr	sctlr_el1, x2
+	isb
+
+	ret	x3

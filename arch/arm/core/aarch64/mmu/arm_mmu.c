@@ -13,6 +13,7 @@
 #include <linker/linker-defs.h>
 #include <sys/util.h>
 #include <sys/slist.h>
+#include <kernel_arch_func.h>
 
 #include "arm_mmu.h"
 
@@ -579,6 +580,11 @@ static void map_thread_stack(struct k_thread *thread,
 		MT_P_RW_U_RW | MT_NORMAL);
 }
 
+static inline uintptr_t ttbr0_get(void)
+{
+	return read_sysreg(ttbr0_el1);
+}
+
 /*
  * Duplicate the set of page tables
  *
@@ -718,6 +724,11 @@ void arch_mem_domain_thread_add(struct k_thread *thread)
 		reset_map(old_ptables, thread->stack_info.start,
 			  thread->stack_info.size);
 	}
+
+	if (thread == _current &&
+	    ttbr0_get() != (uintptr_t)domain_ptables->xlat_tables) {
+		z_arm64_swap_ptables(thread);
+	}
 }
 
 int arch_mem_domain_init(struct k_mem_domain *domain)
@@ -761,6 +772,36 @@ void arch_mem_domain_thread_remove(struct k_thread *thread)
 void arch_mem_domain_destroy(struct k_mem_domain *domain)
 {
 	/* Empty */
+}
+
+void z_arm64_swap_ptables(struct k_thread *incoming)
+{
+	struct arm_mmu_ptables *ptables;
+	uintptr_t pt;
+
+	ptables = incoming->arch.ptables;
+	pt = (uintptr_t)(ptables->xlat_tables);
+
+	if (ttbr0_get() != pt) {
+		z_arm64_set_ttbr0(pt);
+	} else {
+		z_arm64_invalidate_tlb_all();
+	}
+}
+
+void z_arm64_thread_pt_init(struct k_thread *incoming)
+{
+	struct arm_mmu_ptables *ptables;
+
+	if ((incoming->base.user_options & K_USER) == 0)
+		return;
+
+	ptables = incoming->arch.ptables;
+
+	/* Map the thread stack */
+	map_thread_stack(incoming, ptables);
+
+	z_arm64_swap_ptables(incoming);
 }
 
 #endif /* CONFIG_USERSPACE */
