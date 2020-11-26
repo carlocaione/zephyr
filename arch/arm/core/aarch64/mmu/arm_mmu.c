@@ -327,13 +327,13 @@ static const struct arm_mmu_region mmu_zephyr_regions[] = {
 	MMU_REGION_FLAT_ENTRY("zephyr_code",
 			      (uintptr_t)_image_text_start,
 			      (uintptr_t)_image_text_size,
-			      MT_NORMAL | MT_P_RX_U_NA | MT_DEFAULT_SECURE_STATE),
+			      MT_NORMAL | MT_P_RX_U_RX | MT_DEFAULT_SECURE_STATE),
 
 	/* Mark rodata segment cacheable, read only and execute-never */
 	MMU_REGION_FLAT_ENTRY("zephyr_rodata",
 			      (uintptr_t)_image_rodata_start,
 			      (uintptr_t)_image_rodata_size,
-			      MT_NORMAL | MT_P_RO_U_NA | MT_DEFAULT_SECURE_STATE),
+			      MT_NORMAL | MT_P_RO_U_RO | MT_DEFAULT_SECURE_STATE),
 };
 
 static inline void add_arm_mmu_region(struct arm_mmu_ptables *ptables,
