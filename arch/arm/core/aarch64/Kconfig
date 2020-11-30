@@ -103,10 +103,20 @@ config ARM_MMU
 	default y
 	select MMU
 	select SRAM_REGION_PERMISSIONS
-	select ARCH_MEM_DOMAIN_SYNCHRONOUS_API if USERSPACE
-	select ARCH_MEM_DOMAIN_DATA if USERSPACE
+	select ARCH_MEM_DOMAIN_SYNCHRONOUS_API if USERSPACE && !ARM_MMU_COMMON_PAGE_TABLE
+	select ARCH_MEM_DOMAIN_DATA if USERSPACE && !ARM_MMU_COMMON_PAGE_TABLE
 	help
 	  Memory Management Unit support.
+
+config ARM_MMU_COMMON_PAGE_TABLE
+	bool "Use a single page table for all threads"
+	default n
+	depends on USERSPACE
+	help
+	  If this option is enabled, userspace memory domains will not have their
+	  own page tables. Instead, context switching operations will modify
+	  page tables in place. This is much slower, but uses much less RAM
+	  for page tables.
 
 config EXCEPTION_DEBUG
 	bool "Unhandled exception debugging information"

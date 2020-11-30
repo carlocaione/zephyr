@@ -8,6 +8,7 @@
 #include <device.h>
 #include <init.h>
 #include <kernel.h>
+#include <string.h>
 #include <arch/arm/aarch64/cpu.h>
 #include <arch/arm/aarch64/arm_mmu.h>
 #include <linker/linker-defs.h>
@@ -17,7 +18,7 @@
 
 #include "arm_mmu.h"
 
-#ifdef CONFIG_USERSPACE
+#if defined(CONFIG_USERSPACE) && !defined(CONFIG_ARM_MMU_COMMON_PAGE_TABLE)
 static sys_slist_t domain_list;
 #endif
 
@@ -28,6 +29,15 @@ static uint64_t kernel_xlat_tables[PTABLES_SIZE]
 static struct arm_mmu_ptables kernel_ptables = {
 	.xlat_tables = kernel_xlat_tables,
 };
+
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+static uint64_t saved_xlat_tables[PTABLES_SIZE]
+		__aligned(Ln_XLAT_NUM_ENTRIES * sizeof(uint64_t));
+
+static struct arm_mmu_ptables saved_ptables = {
+	.xlat_tables = saved_xlat_tables,
+};
+#endif
 
 /* Translation table control register settings */
 static uint64_t get_tcr(int el)
@@ -415,6 +425,24 @@ static void enable_mmu_el1(struct arm_mmu_ptables *ptables, unsigned int flags)
 	MMU_DEBUG("MMU enabled with dcache\n");
 }
 
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+static void clone_ptables(struct arm_mmu_ptables *dst,
+			  struct arm_mmu_ptables *src)
+{
+	uint64_t *src_xlat, *dst_xlat;
+
+	dst->next_table = src->next_table;
+
+	for (int i = 0; i <= src->next_table; i++) {
+		src_xlat = &src->xlat_tables[i * Ln_XLAT_NUM_ENTRIES];
+		dst_xlat = &dst->xlat_tables[i * Ln_XLAT_NUM_ENTRIES];
+
+		(void)memcpy(dst_xlat, src_xlat,
+			     Ln_XLAT_NUM_ENTRIES * sizeof(uint64_t));
+	}
+}
+#endif
+
 /* ARM MMU Driver Initial Setup */
 
 /*
@@ -445,6 +473,10 @@ static int arm_mmu_init(const struct device *arg)
 
 	/* currently only EL1 is supported */
 	enable_mmu_el1(&kernel_ptables, flags);
+
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+	clone_ptables(&saved_ptables, &kernel_ptables);
+#endif
 
 	return 0;
 }
@@ -503,6 +535,9 @@ int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 	add_map(ptables, "generic", phys, (uintptr_t)virt, size, entry_flags);
 
 #ifdef CONFIG_USERSPACE
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+	clone_ptables(&saved_ptables, &kernel_ptables);
+#else
 	/*
 	 * All virtual-to-physical mappings are the same in all page tables in
 	 * each domain
@@ -519,7 +554,8 @@ int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 		add_map(domain_ptables, "generic", phys, (uintptr_t)virt,
 			size, entry_flags);
 	}
-#endif
+#endif /* CONFIG_ARM_MMU_COMMON_PAGE_TABLE */
+#endif /* CONFIG_USERSPACE */
 
 	return 0;
 }
@@ -551,7 +587,11 @@ int arch_buffer_validate(void *addr, size_t size, int write)
 	uintptr_t virt;
 	int ret = 0;
 
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+	ptables = &kernel_ptables;
+#else
 	ptables = _current->arch.ptables;
+#endif
 
 	k_mem_region_align(&virt, &aligned_size, (uintptr_t)addr,
 			   size, CONFIG_MMU_PAGE_SIZE);
@@ -584,6 +624,38 @@ static inline uintptr_t ttbr0_get(void)
 {
 	return read_sysreg(ttbr0_el1);
 }
+
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+
+void z_arm64_swap_update_common_page_table(struct k_thread *incoming)
+{
+	struct k_mem_domain *domain;
+
+	if ((incoming->base.user_options & K_USER) == 0) {
+		return;
+	}
+
+	domain = incoming->mem_domain_info.mem_domain;
+
+	clone_ptables(&kernel_ptables, &saved_ptables);
+	map_thread_stack(incoming, &kernel_ptables);
+
+	for (int i = 0; i < CONFIG_MAX_DOMAIN_PARTITIONS; i++) {
+		struct k_mem_partition *ptn = &domain->partitions[i];
+
+		if (ptn->size == 0) {
+			continue;
+		}
+
+		add_map(&kernel_ptables, "partition", ptn->start, ptn->start,
+			ptn->size, ptn->attr.attrs | MT_NORMAL);
+	}
+
+	/* Flush the TLB */
+	z_arm64_invalidate_tlb_all();
+}
+
+#else
 
 /*
  * Duplicate the set of page tables
@@ -774,8 +846,13 @@ void arch_mem_domain_destroy(struct k_mem_domain *domain)
 	/* Empty */
 }
 
+#endif /* CONFIG_ARM_MMU_COMMON_PAGE_TABLE */
+
 void z_arm64_swap_ptables(struct k_thread *incoming)
 {
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+	z_arm64_swap_update_common_page_table(incoming);
+#else
 	struct arm_mmu_ptables *ptables;
 	uintptr_t pt;
 
@@ -787,10 +864,14 @@ void z_arm64_swap_ptables(struct k_thread *incoming)
 	} else {
 		z_arm64_invalidate_tlb_all();
 	}
+#endif
 }
 
 void z_arm64_thread_pt_init(struct k_thread *incoming)
 {
+#ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
+	z_arm64_swap_update_common_page_table(incoming);
+#else
 	struct arm_mmu_ptables *ptables;
 
 	if ((incoming->base.user_options & K_USER) == 0)
@@ -802,6 +883,8 @@ void z_arm64_thread_pt_init(struct k_thread *incoming)
 	map_thread_stack(incoming, ptables);
 
 	z_arm64_swap_ptables(incoming);
+
+#endif
 }
 
 #endif /* CONFIG_USERSPACE */
