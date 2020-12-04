@@ -113,10 +113,6 @@ static uint64_t *calculate_pte_index(struct arm_mmu_ptables *ptables,
 
 static void set_pte_table_desc(uint64_t *pte, uint64_t *table, unsigned int level)
 {
-#if DUMP_PTE
-	MMU_DEBUG("%s", XLAT_TABLE_LEVEL_SPACE(level));
-	MMU_DEBUG("%p: [Table] %p\n", pte, table);
-#endif
 	/* Point pte to new table */
 	*pte = PTE_TABLE_DESC | (uint64_t)table;
 }
@@ -198,21 +194,6 @@ static void set_pte_block_desc(uint64_t *pte, uint64_t addr_pa,
 	desc |= addr_pa;
 	desc |= (level == 3) ? PTE_PAGE_DESC : PTE_BLOCK_DESC;
 
-#if DUMP_PTE
-	uint8_t mem_type = (desc >> 2) & MT_TYPE_MASK;
-
-	MMU_DEBUG("%s", XLAT_TABLE_LEVEL_SPACE(level));
-	MMU_DEBUG("%p: ", pte);
-	MMU_DEBUG((mem_type == MT_NORMAL) ? "MEM" :
-		  ((mem_type == MT_NORMAL_NC) ? "NC" : "DEV"));
-	MMU_DEBUG((desc & PTE_BLOCK_DESC_AP_RO) ? "-RO" : "-RW");
-	MMU_DEBUG((desc & PTE_BLOCK_DESC_NS) ? "-NS" : "-S");
-	MMU_DEBUG((desc & PTE_BLOCK_DESC_AP_ELx) ? "-ELx" : "-ELh");
-	MMU_DEBUG((desc & PTE_BLOCK_DESC_PXN) ? "-PXN" : "-PX");
-	MMU_DEBUG((desc & PTE_BLOCK_DESC_UXN) ? "-UXN" : "-UX");
-	MMU_DEBUG("\n");
-#endif
-
 	*pte = desc;
 }
 
@@ -238,8 +219,6 @@ static void split_pte_block_desc(struct arm_mmu_ptables *ptables, uint64_t *pte,
 	/* get address size shift bits for next level */
 	unsigned int levelshift = LEVEL_TO_VA_SIZE_SHIFT(level + 1);
 
-	MMU_DEBUG("Splitting existing PTE %p(L%d)\n", pte, level);
-
 	new_table = new_prealloc_table(ptables);
 
 	for (i = 0; i < Ln_XLAT_NUM_ENTRIES; i++) {
@@ -253,17 +232,13 @@ static void split_pte_block_desc(struct arm_mmu_ptables *ptables, uint64_t *pte,
 	set_pte_table_desc(pte, new_table, level);
 }
 
-static void add_map_with_desc(struct arm_mmu_ptables *ptables, const char *name,
-			      uintptr_t phys, uintptr_t virt, size_t size,
-			      uint64_t desc)
+static void add_map_with_desc(struct arm_mmu_ptables *ptables, uintptr_t phys,
+			      uintptr_t virt, size_t size, uint64_t desc)
 {
 	uint64_t *pte;
 	uint64_t level_size;
 	uint64_t *new_table;
 	unsigned int level = BASE_XLAT_LEVEL;
-
-	MMU_DEBUG("mmap [%s]: virt %lx phys %lx size %lx\n",
-		   name, virt, phys, size);
 
 	/* check minimum alignment requirement for given mmap region */
 	__ASSERT(((virt & (CONFIG_MMU_PAGE_SIZE - 1)) == 0) &&
@@ -308,11 +283,10 @@ static void add_map_with_desc(struct arm_mmu_ptables *ptables, const char *name,
 	}
 }
 
-static void add_map(struct arm_mmu_ptables *ptables, const char *name,
-		    uintptr_t phys, uintptr_t virt, size_t size, uint32_t attrs)
+static void add_map(struct arm_mmu_ptables *ptables, uintptr_t phys,
+		    uintptr_t virt, size_t size, uint32_t attrs)
 {
-	add_map_with_desc(ptables, name, phys, virt, size,
-			  get_region_desc(attrs));
+	add_map_with_desc(ptables, phys, virt, size, get_region_desc(attrs));
 }
 
 /* zephyr execution regions with appropriate attributes */
@@ -349,8 +323,8 @@ static const struct arm_mmu_region mmu_zephyr_regions[] = {
 static inline void add_arm_mmu_region(struct arm_mmu_ptables *ptables,
 				      const struct arm_mmu_region *region)
 {
-	add_map(ptables, region->name, region->base_pa, region->base_va,
-		region->size, region->attrs);
+	add_map(ptables, region->base_pa, region->base_va, region->size,
+		region->attrs);
 }
 
 static void setup_page_tables(struct arm_mmu_ptables *ptables)
@@ -358,11 +332,6 @@ static void setup_page_tables(struct arm_mmu_ptables *ptables)
 	unsigned int index;
 	const struct arm_mmu_region *region;
 	uintptr_t max_va = 0, max_pa = 0;
-
-	MMU_DEBUG("xlat tables:\n");
-	for (index = 0; index < CONFIG_MAX_XLAT_TABLES; index++)
-		MMU_DEBUG("%d: %p\n", index, (uint64_t *)(ptables->xlat_tables +
-					(index * Ln_XLAT_NUM_ENTRIES)));
 
 	for (index = 0; index < mmu_config.num_regions; index++) {
 		region = &mmu_config.mmu_regions[index];
@@ -421,8 +390,6 @@ static void enable_mmu_el1(struct arm_mmu_ptables *ptables, unsigned int flags)
 
 	/* Ensure the MMU enable takes effect immediately */
 	__ISB();
-
-	MMU_DEBUG("MMU enabled with dcache\n");
 }
 
 #ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
@@ -481,13 +448,7 @@ static int arm_mmu_init(const struct device *arg)
 	return 0;
 }
 
-SYS_INIT(arm_mmu_init, PRE_KERNEL_1,
-#if MMU_DEBUG_PRINTS
-	 MMU_DEBUG_PRIORITY
-#else
-	 CONFIG_KERNEL_INIT_PRIORITY_OBJECTS
-#endif
-);
+SYS_INIT(arm_mmu_init, PRE_KERNEL_1, CONFIG_KERNEL_INIT_PRIORITY_OBJECTS);
 
 int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 {
@@ -532,7 +493,7 @@ int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 		return -ENOTSUP;
 	}
 
-	add_map(ptables, "generic", phys, (uintptr_t)virt, size, entry_flags);
+	add_map(ptables, phys, (uintptr_t)virt, size, entry_flags);
 
 #ifdef CONFIG_USERSPACE
 #ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
@@ -551,14 +512,89 @@ int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 		domain = CONTAINER_OF(node, struct arch_mem_domain, node);
 		domain_ptables = &domain->ptables;
 
-		add_map(domain_ptables, "generic", phys, (uintptr_t)virt,
-			size, entry_flags);
+		add_map(domain_ptables, phys, (uintptr_t)virt, size,
+			entry_flags);
 	}
 #endif /* CONFIG_ARM_MMU_COMMON_PAGE_TABLE */
 #endif /* CONFIG_USERSPACE */
 
 	return 0;
 }
+
+#ifdef CONFIG_EXCEPTION_DEBUG
+
+#define DUMP_PTE 0
+
+#if DUMP_PTE
+
+#define L0_SPACE ""
+#define L1_SPACE "  "
+#define L2_SPACE "    "
+#define L3_SPACE "      "
+#define XLAT_TABLE_LEVEL_SPACE(level)		\
+	(((level) == 0) ? L0_SPACE :		\
+	((level) == 1) ? L1_SPACE :		\
+	((level) == 2) ? L2_SPACE : L3_SPACE)
+
+static void dump_pte(uint64_t *pte, int level)
+{
+	uint8_t mem_type;
+	uint64_t desc;
+
+	desc = get_region_desc_from_pte(pte);
+	mem_type = (desc >> 2) & MT_TYPE_MASK;
+
+	printk("%s", XLAT_TABLE_LEVEL_SPACE(level));
+	printk("%p: ", pte);
+	printk((mem_type == MT_NORMAL) ? "MEM" :
+	      ((mem_type == MT_NORMAL_NC) ? "NC" : "DEV"));
+	printk((desc & PTE_BLOCK_DESC_AP_RO) ? "-RO" : "-RW");
+	printk((desc & PTE_BLOCK_DESC_NS) ? "-NS" : "-S");
+	printk((desc & PTE_BLOCK_DESC_AP_ELx) ? "-ELx" : "-ELh");
+	printk((desc & PTE_BLOCK_DESC_PXN) ? "-PXN" : "-PX");
+	printk((desc & PTE_BLOCK_DESC_UXN) ? "-UXN" : "-UX");
+	printk("\n");
+}
+
+static void dump_page_table(struct arm_mmu_ptables *pt, uint64_t *table,
+			    int level)
+{
+	printk("%s", XLAT_TABLE_LEVEL_SPACE(level - 1));
+	printk("[Table] %p\n", table);
+
+	for (int i = 0; i < Ln_XLAT_NUM_ENTRIES; i++) {
+		uint64_t *pte = table + i;
+		int type = pte_desc_type(pte);
+
+		if (type == PTE_INVALID_DESC) {
+			continue;
+		}
+
+		if (pte_is_page_or_block(pte, level)) {
+			dump_pte(pte, level);
+			continue;
+		}
+
+		if (type == PTE_TABLE_DESC) {
+			uint64_t *next_table;
+
+			next_table = (uint64_t *)(*pte & 0x0000fffffffff000ULL);
+			dump_page_table(pt, next_table, level + 1);
+		}
+	}
+}
+
+static int dump_kernel_tables(const struct device *unused)
+{
+	dump_page_table(&kernel_ptables, kernel_ptables.xlat_tables,
+			BASE_XLAT_LEVEL);
+
+	return 0;
+}
+
+SYS_INIT(dump_kernel_tables, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
+#endif /* DUMP_PTE */
+#endif /* CONFIG_EXCEPTION_DEBUG */
 
 #ifdef CONFIG_USERSPACE
 static bool page_validate(struct arm_mmu_ptables *ptables, uintptr_t addr,
@@ -615,9 +651,8 @@ int arch_mem_domain_max_partitions_get(void)
 static void map_thread_stack(struct k_thread *thread,
 			     struct arm_mmu_ptables *ptables)
 {
-	add_map(ptables, "thread_stack", thread->stack_info.start,
-		thread->stack_info.start, thread->stack_info.size,
-		MT_P_RW_U_RW | MT_NORMAL);
+	add_map(ptables, thread->stack_info.start, thread->stack_info.start,
+		thread->stack_info.size, MT_P_RW_U_RW | MT_NORMAL);
 }
 
 static inline uintptr_t ttbr0_get(void)
@@ -647,8 +682,8 @@ void z_arm64_swap_update_common_page_table(struct k_thread *incoming)
 			continue;
 		}
 
-		add_map(&kernel_ptables, "partition", ptn->start, ptn->start,
-			ptn->size, ptn->attr.attrs | MT_NORMAL);
+		add_map(&kernel_ptables, ptn->start, ptn->start, ptn->size,
+			ptn->attr.attrs | MT_NORMAL);
 	}
 
 	/* Flush the TLB */
@@ -738,8 +773,8 @@ static void reset_map(struct arm_mmu_ptables *ptables, uintptr_t addr,
 		/* Re-apply the original attributes to the page in the domain
 		 * ptables
 		 */
-		add_map_with_desc(ptables, "partition", addr, addr,
-				  CONFIG_MMU_PAGE_SIZE, desc);
+		add_map_with_desc(ptables, addr, addr, CONFIG_MMU_PAGE_SIZE,
+				  desc);
 
 	}
 }
@@ -767,8 +802,8 @@ void arch_mem_domain_partition_add(struct k_mem_domain *domain,
 
 	ptn = &domain->partitions[partition_id];
 
-	add_map(domain_ptables, "partition", ptn->start, ptn->start,
-		ptn->size, ptn->attr.attrs | MT_NORMAL);
+	add_map(domain_ptables, ptn->start, ptn->start, ptn->size,
+		ptn->attr.attrs | MT_NORMAL);
 
 }
 

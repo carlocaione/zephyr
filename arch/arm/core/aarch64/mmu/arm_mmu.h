@@ -5,31 +5,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/* Set below flag to get debug prints */
-#define MMU_DEBUG_PRINTS	0
-
-/* To get prints from MMU driver, it has to initialized after console driver */
-#define MMU_DEBUG_PRIORITY	70
-
-#if MMU_DEBUG_PRINTS
-/* To dump page table entries while filling them, set DUMP_PTE macro */
-#define DUMP_PTE		0
-#define MMU_DEBUG(fmt, ...)	printk(fmt, ##__VA_ARGS__)
-#else
-#define MMU_DEBUG(...)
-#endif
-
-#if DUMP_PTE
-#define L0_SPACE ""
-#define L1_SPACE "  "
-#define L2_SPACE "    "
-#define L3_SPACE "      "
-#define XLAT_TABLE_LEVEL_SPACE(level)		\
-	(((level) == 0) ? L0_SPACE :		\
-	((level) == 1) ? L1_SPACE :		\
-	((level) == 2) ? L2_SPACE : L3_SPACE)
-#endif
-
 /*
  * 48-bit address with 4KB granule size:
  *
