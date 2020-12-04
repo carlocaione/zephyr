@@ -33,3 +33,5 @@ zephyr_library_sources_ifdef(CONFIG_THREAD_LOCAL_STORAGE ../common/tls.c)
 zephyr_library_sources_ifdef(CONFIG_USERSPACE userspace.S)
 
 add_subdirectory_ifdef(CONFIG_ARM_MMU mmu)
+
+zephyr_cc_option_ifdef(CONFIG_USERSPACE -mno-outline-atomics)
