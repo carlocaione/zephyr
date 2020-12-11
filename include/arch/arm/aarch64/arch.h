@@ -72,8 +72,6 @@ typedef struct {
 } k_mem_partition_attr_t;
 
 struct arch_mem_domain {
-	uint64_t xlat_tables[PTABLES_SIZE]
-		 __aligned(XLAT_NUM_ENTRIES * sizeof(uint64_t));
 	struct arm_mmu_ptables ptables;
 	sys_snode_t node;
 };

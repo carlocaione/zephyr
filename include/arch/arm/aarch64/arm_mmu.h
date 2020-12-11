@@ -167,7 +167,8 @@ struct arm_mmu_config {
 };
 
 struct arm_mmu_ptables {
-	uint64_t *xlat_tables;
+	uint64_t xlat_tables[PTABLES_SIZE]
+		 __aligned(XLAT_NUM_ENTRIES * sizeof(uint64_t));
 	unsigned int next_table;
 };
 

@@ -23,20 +23,10 @@ static sys_slist_t domain_list;
 #endif
 
 /* kernel ptables created at MMU init time */
-static uint64_t kernel_xlat_tables[PTABLES_SIZE]
-		__aligned(Ln_XLAT_NUM_ENTRIES * sizeof(uint64_t));
-
-static struct arm_mmu_ptables kernel_ptables = {
-	.xlat_tables = kernel_xlat_tables,
-};
+static struct arm_mmu_ptables kernel_ptables;
 
 #ifdef CONFIG_ARM_MMU_COMMON_PAGE_TABLE
-static uint64_t saved_xlat_tables[PTABLES_SIZE]
-		__aligned(Ln_XLAT_NUM_ENTRIES * sizeof(uint64_t));
-
-static struct arm_mmu_ptables saved_ptables = {
-	.xlat_tables = saved_xlat_tables,
-};
+static struct arm_mmu_ptables saved_ptables;
 #endif
 
 /* Translation table control register settings */
@@ -844,7 +834,6 @@ int arch_mem_domain_init(struct k_mem_domain *domain)
 
 	/* Initialize the domain ptables struct */
 	domain_ptables = &domain->arch.ptables;
-	domain_ptables->xlat_tables = domain->arch.xlat_tables;
 
 	/* Copy the kernel page tables created at MMU init time */
 	copy_page_table(domain_ptables, &kernel_ptables,
