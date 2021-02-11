@@ -50,6 +50,37 @@ strlen_done:
 	ret
 
 /*
+ * int arch_buffer_validate(void *addr, size_t size, int write)
+ */
+
+GTEXT(arch_buffer_validate_fault_start)
+GTEXT(arch_buffer_validate_fault_end)
+GTEXT(arch_buffer_validate_fixup)
+
+GTEXT(arch_buffer_validate)
+SECTION_FUNC(TEXT, arch_buffer_validate)
+
+	add	x1, x1, x0
+
+arch_buffer_validate_fault_start:
+	ldtrb	w3, [x0]
+	cbz	w2, arch_buffer_validate_fault_end
+	sttrb	w3, [x0]
+arch_buffer_validate_fault_end:
+
+	orr	x0, x0, #(CONFIG_MMU_PAGE_SIZE - 1)
+	add	x0, x0, #1
+	cmp	x0, x1
+	blo	arch_buffer_validate_fault_start
+
+	mov	x0, #0
+	ret
+
+arch_buffer_validate_fixup:
+	mov	x0, #-1
+	ret
+
+/*
  * Routine to jump into userspace
  *
  * We leverage z_arm64_exit_exc() to pop out the entry function and parameters

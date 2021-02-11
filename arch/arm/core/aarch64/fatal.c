@@ -21,9 +21,11 @@ LOG_MODULE_DECLARE(os, CONFIG_KERNEL_LOG_LEVEL);
 
 #ifdef CONFIG_USERSPACE
 Z_EXC_DECLARE(z_arm64_user_string_nlen);
+Z_EXC_DECLARE(arch_buffer_validate);
 
 static const struct z_exc_handle exceptions[] = {
 	Z_EXC_HANDLE(z_arm64_user_string_nlen),
+	Z_EXC_HANDLE(arch_buffer_validate),
 };
 #endif /* CONFIG_USERSPACE */
 
