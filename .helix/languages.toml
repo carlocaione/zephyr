@@ -5,13 +5,23 @@
 command = "clangd"
 args = [
   "--background-index",
-  "--compile-commands-dir=build"
+  "--compile-commands-dir=build",
+  "--clang-tidy",
+  "--header-insertion=never",
+  "--completion-style=detailed",
+  "--function-arg-placeholders",
+  "--fallback-style=none",
+  "--all-scopes-completion",
+  "--log=error"
 ]
 
 [[language]]
 name = "c"
 language-servers = ["clangd"]
+# Enable inlay hints for parameter names and type hints
+auto-format = false
 
 [[language]]
 name = "cpp"
 language-servers = ["clangd"]
+auto-format = false

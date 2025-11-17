@@ -6,5 +6,9 @@ Index:
   Background: Build
   StandardLibrary: No
 
+Hover:
+  ShowAKA: Yes
+
 Diagnostics:
   Suppress: []
+  UnusedIncludes: None
