@@ -1,0 +1,10 @@
+CompileFlags:
+  CompilationDatabase: build
+  Remove: [-fno-reorder-functions, -mfp16-format=ieee, -fno-printf-return-value]
+
+Index:
+  Background: Build
+  StandardLibrary: No
+
+Diagnostics:
+  Suppress: []
