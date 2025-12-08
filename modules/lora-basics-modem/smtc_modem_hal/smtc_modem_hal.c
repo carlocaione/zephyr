@@ -19,3 +19,8 @@ void smtc_modem_hal_init(const struct device *transceiver)
 
 	prv_transceiver_dev = transceiver;
 }
+
+void smtc_modem_hal_irq_config_radio_irq(void (*callback)(void *context), void *context)
+{
+
+}
