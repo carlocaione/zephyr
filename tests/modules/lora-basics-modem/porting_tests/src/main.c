@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <stdlib.h>
+
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
@@ -17,6 +19,15 @@
 #define SYNC_WORD_NO_RADIO 0x21
 #define FREQ_NO_RADIO 868300000
 #define MARGIN_GET_TIME_IN_MS 1
+
+/**
+ * @brief Return test enumeration
+ */
+enum return_code_test {
+	RC_PORTING_TEST_OK = 0x00,
+	RC_PORTING_TEST_NOK = 0x01,
+	RC_PORTING_TEST_RELAUNCH = 0x02,
+};
 
 #define DEFAULT_RADIO_NODE DT_ALIAS(lora0)
 BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(DEFAULT_RADIO_NODE),
@@ -257,14 +268,16 @@ ZTEST_F(lbm_porting, test_radio_irq)
  * - Wait for radio IRQ (get stop time in IRQ callback)
  * - Check if time is coherent with the configured timeout
  *
- * Note: If radio IRQ received is not RX timeout, test is skipped
+ * @return enum return_code_test RC_PORTING_TEST_OK, RC_PORTING_TEST_NOK, or RC_PORTING_TEST_RELAUNCH
  */
-ZTEST_F(lbm_porting, test_get_time_in_s)
+static enum return_code_test test_get_time_in_s(struct lbm_porting_fixture *fixture)
 {
 	ral_status_t status;
 	uint32_t rx_timeout_in_ms = 5000;
 	uint32_t start_time_s;
 	uint32_t elapsed_time;
+
+	TC_PRINT("Get time in seconds\n");
 
 	/* Reset flags */
 	fixture->radio_irq_raised = false;
@@ -273,7 +286,10 @@ ZTEST_F(lbm_porting, test_get_time_in_s)
 
 	/* Reset, init radio and put it in sleep mode */
 	status = reset_init_radio(fixture);
-	zassert_equal(status, RAL_STATUS_OK, "Could not reset/init radio: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("Could not reset/init radio: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Setup radio and IRQ - use callback that records time in seconds */
 	smtc_modem_hal_irq_config_radio_irq(radio_rx_irq_callback_get_time_in_s, fixture);
@@ -282,17 +298,26 @@ ZTEST_F(lbm_porting, test_get_time_in_s)
 
 	/* Setup LoRa parameters */
 	status = ralf_setup_lora(&fixture->modem_radio, &fixture->rx_lora_param);
-	zassert_equal(status, RAL_STATUS_OK, "ralf_setup_lora failed: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("ralf_setup_lora failed: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Configure IRQ parameters */
 	status = ral_set_dio_irq_params(&fixture->modem_radio.ral,
 					RAL_IRQ_RX_DONE | RAL_IRQ_RX_TIMEOUT |
 					RAL_IRQ_RX_HDR_ERROR | RAL_IRQ_RX_CRC_ERROR);
-	zassert_equal(status, RAL_STATUS_OK, "ral_set_dio_irq_params failed: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("ral_set_dio_irq_params failed: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Set radio in RX mode */
 	status = ral_set_rx(&fixture->modem_radio.ral, rx_timeout_in_ms);
-	zassert_equal(status, RAL_STATUS_OK, "ral_set_rx failed: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("ral_set_rx failed: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Get start time */
 	start_time_s = smtc_modem_hal_get_time_in_s();
@@ -302,16 +327,24 @@ ZTEST_F(lbm_porting, test_get_time_in_s)
 		k_sleep(K_MSEC(10));
 	}
 
-	/* Skip test if IRQ was not RX timeout (may need to relaunch) */
+	/* Relaunch test if IRQ was not RX timeout */
 	if (fixture->irq_rx_timeout_raised == false) {
-		ztest_test_skip();
+		TC_PRINT("Radio IRQ received but not RX timeout -> relaunch test\n");
+		return RC_PORTING_TEST_RELAUNCH;
 	}
 
 	/* Check elapsed time */
 	elapsed_time = fixture->irq_time_s - start_time_s;
-	zassert_equal(elapsed_time, rx_timeout_in_ms / 1000,
-		      "Time is not coherent: expected %us / got %us",
-		      rx_timeout_in_ms / 1000, elapsed_time);
+	if (elapsed_time != rx_timeout_in_ms / 1000) {
+		TC_PRINT("Time is not coherent: expected %us / got %us\n",
+			 rx_timeout_in_ms / 1000, elapsed_time);
+		return RC_PORTING_TEST_NOK;
+	}
+
+	TC_PRINT("Time expected %us / got %us (no margin)\n",
+		 rx_timeout_in_ms / 1000, elapsed_time);
+
+	return RC_PORTING_TEST_OK;
 }
 
 /**
@@ -324,15 +357,17 @@ ZTEST_F(lbm_porting, test_get_time_in_s)
  * - Wait for radio IRQ (get stop time in IRQ callback)
  * - Check if time is coherent with the configured timeout symbol number
  *
- * Note: If radio IRQ received is not RX timeout, test is skipped
+ * @return enum return_code_test RC_PORTING_TEST_OK, RC_PORTING_TEST_NOK, or RC_PORTING_TEST_RELAUNCH
  */
-ZTEST_F(lbm_porting, test_get_time_in_ms)
+static enum return_code_test test_get_time_in_ms(struct lbm_porting_fixture *fixture)
 {
 	ral_status_t status;
 	uint32_t start_time_ms;
 	uint32_t elapsed_time;
 	uint32_t symb_time_ms;
 	uint8_t wait_start_ms = 5;
+
+	TC_PRINT("Get time in milliseconds\n");
 
 	/* Reset flags */
 	fixture->radio_irq_raised = false;
@@ -353,7 +388,10 @@ ZTEST_F(lbm_porting, test_get_time_in_ms)
 
 	/* Reset, init radio and put it in sleep mode */
 	status = reset_init_radio(fixture);
-	zassert_equal(status, RAL_STATUS_OK, "Could not reset/init radio: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("Could not reset/init radio: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Setup radio and IRQ */
 	smtc_modem_hal_irq_config_radio_irq(radio_rx_irq_callback, fixture);
@@ -362,13 +400,19 @@ ZTEST_F(lbm_porting, test_get_time_in_ms)
 
 	/* Setup LoRa parameters */
 	status = ralf_setup_lora(&fixture->modem_radio, &fixture->rx_lora_param);
-	zassert_equal(status, RAL_STATUS_OK, "ralf_setup_lora failed: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("ralf_setup_lora failed: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Configure IRQ parameters */
 	status = ral_set_dio_irq_params(&fixture->modem_radio.ral,
 					RAL_IRQ_RX_DONE | RAL_IRQ_RX_TIMEOUT |
 					RAL_IRQ_RX_HDR_ERROR | RAL_IRQ_RX_CRC_ERROR);
-	zassert_equal(status, RAL_STATUS_OK, "ral_set_dio_irq_params failed: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("ral_set_dio_irq_params failed: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Wait to align start time */
 	start_time_ms = smtc_modem_hal_get_time_in_ms() + wait_start_ms;
@@ -378,16 +422,20 @@ ZTEST_F(lbm_porting, test_get_time_in_ms)
 
 	/* Set radio in RX mode with symbol timeout (timeout_in_ms = 0) */
 	status = ral_set_rx(&fixture->modem_radio.ral, 0);
-	zassert_equal(status, RAL_STATUS_OK, "ral_set_rx failed: 0x%x", status);
+	if (status != RAL_STATUS_OK) {
+		TC_PRINT("ral_set_rx failed: 0x%x\n", status);
+		return RC_PORTING_TEST_NOK;
+	}
 
 	/* Wait for radio IRQ */
 	while (fixture->radio_irq_raised == false) {
 		k_sleep(K_MSEC(1));
 	}
 
-	/* Skip test if IRQ was not RX timeout (may need to relaunch) */
+	/* Relaunch test if IRQ was not RX timeout */
 	if (fixture->irq_rx_timeout_raised == false) {
-		ztest_test_skip();
+		TC_PRINT("Radio IRQ received but not RX timeout -> relaunch test\n");
+		return RC_PORTING_TEST_RELAUNCH;
 	}
 
 	/* Calculate elapsed time, compensating for TCXO startup delay */
@@ -395,7 +443,38 @@ ZTEST_F(lbm_porting, test_get_time_in_ms)
 		       smtc_modem_hal_get_radio_tcxo_startup_delay_ms();
 
 	/* Check elapsed time within margin */
-	zassert_within(elapsed_time, symb_time_ms, MARGIN_GET_TIME_IN_MS,
-		       "Time is not coherent: expected %ums / got %ums (margin +/-%ums)",
-		       symb_time_ms, elapsed_time, MARGIN_GET_TIME_IN_MS);
+	if (abs((int)(elapsed_time - symb_time_ms)) > MARGIN_GET_TIME_IN_MS) {
+		TC_PRINT("Time is not coherent: expected %ums / got %ums (margin +/-%ums)\n",
+			 symb_time_ms, elapsed_time, MARGIN_GET_TIME_IN_MS);
+		return RC_PORTING_TEST_NOK;
+	}
+
+	TC_PRINT("Time expected %ums / got %ums (margin +/-%ums)\n",
+		 symb_time_ms, elapsed_time, MARGIN_GET_TIME_IN_MS);
+
+	return RC_PORTING_TEST_OK;
+}
+
+/**
+ * @brief Test time (Get time in s and in ms)
+ *
+ * Test processing:
+ * - Run test_get_time_in_s (with retry on relaunch)
+ * - Run test_get_time_in_ms (with retry on relaunch)
+ */
+ZTEST_F(lbm_porting, test_get_time)
+{
+	enum return_code_test ret;
+
+	/* Test get time in seconds */
+	do {
+		ret = test_get_time_in_s(fixture);
+		zassert_not_equal(ret, RC_PORTING_TEST_NOK, "test_get_time_in_s failed");
+	} while (ret == RC_PORTING_TEST_RELAUNCH);
+
+	/* Test get time in milliseconds */
+	do {
+		ret = test_get_time_in_ms(fixture);
+		zassert_not_equal(ret, RC_PORTING_TEST_NOK, "test_get_time_in_ms failed");
+	} while (ret == RC_PORTING_TEST_RELAUNCH);
 }
