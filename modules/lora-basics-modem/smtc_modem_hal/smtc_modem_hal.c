@@ -8,15 +8,18 @@
 #include <zephyr/drivers/lora.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 
 #include <lbm_common.h>
 #include <smtc_modem_hal.h>
 #include <smtc_modem_hal_ext.h>
 
-typedef void (*dio_callback_t)(void *context);
+LOG_MODULE_REGISTER(smtc_modem_hal, CONFIG_LORA_LOG_LEVEL);
 
 #define HAL_WORKQ_STACK_SIZE (1024)
 #define HAL_WORKQ_PRIORITY (-1)
+
+typedef void (*dio_callback_t)(void *context);
 
 struct cb_data_t {
 	struct gpio_callback cb;
@@ -64,17 +67,26 @@ void smtc_modem_hal_init(const struct device *transceiver)
 
 void smtc_modem_hal_irq_config_radio_irq(dio_callback_t dio_cb, void *context)
 {
+	int ret;
+
 	__ASSERT(dio_cb, "DIO1 callback must be provided");
 
 	if (prv_cb_data.dio_cb != NULL) {
-		lbm_driver_remove_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb);
+		ret = lbm_driver_remove_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb);
+		if (ret < 0) {
+			LOG_ERR("Failed to remove DIO1 GPIO callback: %d", ret);
+		}
 	}
 
 	prv_cb_data.dio_cb = dio_cb;
 	prv_cb_data.context = context;
 
 	gpio_init_callback(&prv_cb_data.cb, hal_irq_callback, 0);
-	lbm_driver_add_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb);
+
+	ret = lbm_driver_add_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb);
+	if (ret < 0) {
+		LOG_ERR("Failed to add DIO1 GPIO callback: %d", ret);
+	}
 }
 
 void smtc_modem_hal_start_radio_tcxo(void)
