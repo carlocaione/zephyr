@@ -7,6 +7,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/lora.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/kernel.h>
 
 #include <lbm_common.h>
 #include <smtc_modem_hal.h>
@@ -14,13 +15,37 @@
 
 typedef void (*dio_callback_t)(void *context);
 
+#define HAL_WORKQ_STACK_SIZE (1024)
+#define HAL_WORKQ_PRIORITY (-1)
+
 struct cb_data_t {
 	struct gpio_callback cb;
+	struct k_work work;
 	dio_callback_t dio_cb;
 	void *context;
 };
 
+static struct cb_data_t prv_cb_data;
 static const struct device *prv_transceiver_dev;
+
+static K_THREAD_STACK_DEFINE(hal_workq_stack, HAL_WORKQ_STACK_SIZE);
+static struct k_work_q hal_workq;
+
+static void hal_irq_work_handler(struct k_work *work)
+{
+	struct cb_data_t *data = CONTAINER_OF(work, struct cb_data_t, work);
+
+	if (data->dio_cb != NULL) {
+		data->dio_cb(data->context);
+	}
+}
+
+static void hal_irq_callback(const struct device *port, struct gpio_callback *cb, uint32_t pins)
+{
+	struct cb_data_t *data = CONTAINER_OF(cb, struct cb_data_t, cb);
+
+	k_work_submit_to_queue(&hal_workq, &data->work);
+}
 
 void smtc_modem_hal_init(const struct device *transceiver)
 {
@@ -28,27 +53,28 @@ void smtc_modem_hal_init(const struct device *transceiver)
 	__ASSERT(DEVICE_API_IS(lora, transceiver), "transceiver must be a LoRa device");
 
 	prv_transceiver_dev = transceiver;
-}
 
-static void hal_irq_callback(const struct device *port, struct gpio_callback *cb, uint32_t pins)
-{
-	struct cb_data_t *data = CONTAINER_OF(cb, struct cb_data_t, cb);
+	k_work_queue_start(&hal_workq, hal_workq_stack,
+			   K_THREAD_STACK_SIZEOF(hal_workq_stack),
+			   HAL_WORKQ_PRIORITY, NULL);
+	k_thread_name_set(&hal_workq.thread, "lbm_hal_workq");
 
-	if (data->dio_cb != NULL) {
-		data->dio_cb(data->context);
-	}
+	k_work_init(&prv_cb_data.work, hal_irq_work_handler);
 }
 
 void smtc_modem_hal_irq_config_radio_irq(dio_callback_t dio_cb, void *context)
 {
-	static struct cb_data_t cb_data;
+	__ASSERT(dio_cb, "DIO1 callback must be provided");
 
-	cb_data.dio_cb = dio_cb;
-	cb_data.context = context;
+	if (prv_cb_data.dio_cb != NULL) {
+		lbm_driver_remove_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb);
+	}
 
-	gpio_init_callback(&cb_data.cb, hal_irq_callback, 0);
-	lbm_driver_add_dio1_gpio_callback(prv_transceiver_dev, &cb_data.cb);
+	prv_cb_data.dio_cb = dio_cb;
+	prv_cb_data.context = context;
 
+	gpio_init_callback(&prv_cb_data.cb, hal_irq_callback, 0);
+	lbm_driver_add_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb);
 }
 
 void smtc_modem_hal_start_radio_tcxo(void)

@@ -26,31 +26,20 @@ struct lbm_porting_fixture {
 	const struct device *transceiver;
 	volatile bool radio_irq_raised;
 	ralf_params_lora_t rx_lora_param;
-	struct k_work radio_irq_work;
 };
 
-/* Work handler that runs in thread context */
-static void radio_irq_work_handler(struct k_work *work)
-{
-	struct lbm_porting_fixture *fixture =
-		CONTAINER_OF(work, struct lbm_porting_fixture, radio_irq_work);
-
-	/* Clear IRQ status (safe in thread context) */
-	ral_clear_irq_status(&fixture->modem_radio.ral, RAL_IRQ_ALL);
-
-	/* Shut down the TCXO */
-	smtc_modem_hal_stop_radio_tcxo();
-}
-
-/* Radio IRQ callback (runs in interrupt context) */
+/* Radio IRQ callback (runs in thread context via HAL work queue) */
 static void radio_rx_irq_callback(void *context)
 {
 	struct lbm_porting_fixture *fixture = (struct lbm_porting_fixture *)context;
 
 	fixture->radio_irq_raised = true;
 
-	/* Submit work to be processed in thread context */
-	k_work_submit(&fixture->radio_irq_work);
+	/* Clear IRQ status */
+	ral_clear_irq_status(&fixture->modem_radio.ral, RAL_IRQ_ALL);
+
+	/* Shut down the TCXO */
+	smtc_modem_hal_stop_radio_tcxo();
 }
 
 /**
@@ -119,9 +108,6 @@ static void *lbm_porting_setup(void)
 	};
 
 	fixture.modem_radio.ral.context = fixture.transceiver;
-
-	/* Initialize work queue for deferred IRQ handling */
-	k_work_init(&fixture.radio_irq_work, radio_irq_work_handler);
 
 	smtc_modem_hal_init(fixture.transceiver);
 
