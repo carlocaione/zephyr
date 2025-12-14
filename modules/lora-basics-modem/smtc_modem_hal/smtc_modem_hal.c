@@ -16,19 +16,27 @@
 
 LOG_MODULE_REGISTER(smtc_modem_hal, CONFIG_LORA_LOG_LEVEL);
 
-#define HAL_WORKQ_STACK_SIZE (1024)
+#define HAL_WORKQ_STACK_SIZE 1024
 #define HAL_WORKQ_PRIORITY (-1)
 
-typedef void (*dio_callback_t)(void *context);
+typedef void (*callback_t)(void *context);
 
 struct cb_data_t {
 	struct gpio_callback cb;
 	struct k_work work;
-	dio_callback_t dio_cb;
+	callback_t dio_cb;
+	void *context;
+};
+
+struct timer_data_t {
+	struct k_timer timer;
+	callback_t timer_cb;
 	void *context;
 };
 
 static struct cb_data_t prv_cb_data;
+static struct timer_data_t prv_timer_data;
+
 static const struct device *prv_transceiver_dev;
 
 static K_THREAD_STACK_DEFINE(hal_workq_stack, HAL_WORKQ_STACK_SIZE);
@@ -50,6 +58,15 @@ static void hal_irq_callback(const struct device *port, struct gpio_callback *cb
 	k_work_submit_to_queue(&hal_workq, &data->work);
 }
 
+static void hal_timer_callback(struct k_timer *timer)
+{
+	struct timer_data_t *data = CONTAINER_OF(timer, struct timer_data_t, timer);
+
+	if (data->timer_cb != NULL) {
+		data->timer_cb(data->context);
+	}
+}
+
 void smtc_modem_hal_init(const struct device *transceiver)
 {
 	__ASSERT(transceiver, "transceiver must be provided");
@@ -63,9 +80,10 @@ void smtc_modem_hal_init(const struct device *transceiver)
 	k_thread_name_set(&hal_workq.thread, "lbm_hal_workq");
 
 	k_work_init(&prv_cb_data.work, hal_irq_work_handler);
+	k_timer_init(&prv_timer_data.timer, hal_timer_callback, NULL);
 }
 
-void smtc_modem_hal_irq_config_radio_irq(dio_callback_t dio_cb, void *context)
+void smtc_modem_hal_irq_config_radio_irq(callback_t dio_cb, void *context)
 {
 	int ret;
 
@@ -127,3 +145,14 @@ uint32_t smtc_modem_hal_get_radio_tcxo_startup_delay_ms(void)
 {
 	return 0;
 }
+
+void smtc_modem_hal_start_timer(const uint32_t milliseconds, callback_t callback, void *context)
+{
+	k_timer_start(&prv_timer_data.timer, K_MSEC(milliseconds), K_NO_WAIT);
+}
+
+void smtc_modem_hal_stop_timer(void)
+{
+	k_timer_stop(&prv_timer_data.timer);
+}
+

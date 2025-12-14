@@ -19,6 +19,7 @@
 #define SYNC_WORD_NO_RADIO 0x21
 #define FREQ_NO_RADIO 868300000
 #define MARGIN_GET_TIME_IN_MS 1
+#define MARGIN_TIMER_IRQ_IN_MS 2
 
 /**
  * @brief Return test enumeration
@@ -38,6 +39,7 @@ struct lbm_porting_fixture {
 	const struct device *transceiver;
 	volatile bool radio_irq_raised;
 	volatile bool irq_rx_timeout_raised;
+	volatile bool timer_irq_raised;
 	volatile uint32_t irq_time_ms;
 	volatile uint32_t irq_time_s;
 	ralf_params_lora_t rx_lora_param;
@@ -91,6 +93,15 @@ static void radio_rx_irq_callback_get_time_in_s(void *context)
 
 	/* Shut down the TCXO */
 	smtc_modem_hal_stop_radio_tcxo();
+}
+
+/* Timer IRQ callback */
+static void timer_irq_callback(void *context)
+{
+	struct lbm_porting_fixture *fixture = (struct lbm_porting_fixture *)context;
+
+	fixture->irq_time_ms = smtc_modem_hal_get_time_in_ms();
+	fixture->timer_irq_raised = true;
 }
 
 /**
@@ -477,4 +488,89 @@ ZTEST_F(lbm_porting, test_get_time)
 		ret = test_get_time_in_ms(fixture);
 		zassert_not_equal(ret, RC_PORTING_TEST_NOK, "test_get_time_in_ms failed");
 	} while (ret == RC_PORTING_TEST_RELAUNCH);
+}
+
+/**
+ * @brief Test timer IRQ
+ *
+ * Test processing:
+ * - Get start time
+ * - Configure and start timer
+ * - Wait timer irq (get stop time in irq callback)
+ * - Check the time elapsed between timer start and timer IRQ reception
+ */
+ZTEST_F(lbm_porting, test_timer_irq)
+{
+	uint32_t timer_ms = 3000;
+	uint8_t wait_start_ms = 5;
+	uint16_t timeout_ms = 2000;
+	uint32_t start_time_ms;
+	uint32_t elapsed_time;
+
+	fixture->timer_irq_raised = false;
+
+	smtc_modem_hal_stop_timer();
+
+	/* Wait to align start time */
+	start_time_ms = smtc_modem_hal_get_time_in_ms() + wait_start_ms;
+	while (smtc_modem_hal_get_time_in_ms() < start_time_ms) {
+		k_sleep(K_MSEC(1));
+	}
+
+	smtc_modem_hal_start_timer(timer_ms, timer_irq_callback, fixture);
+
+	/* Wait for timer IRQ with timeout */
+	while ((fixture->timer_irq_raised == false) &&
+	       ((smtc_modem_hal_get_time_in_ms() - start_time_ms) < (timer_ms + timeout_ms))) {
+		k_sleep(K_MSEC(1));
+	}
+
+	zassert_true(fixture->timer_irq_raised, "Timeout: timer irq not received");
+
+	elapsed_time = fixture->irq_time_ms - start_time_ms;
+
+	zassert_true((elapsed_time >= timer_ms) &&
+		     (elapsed_time <= timer_ms + MARGIN_TIMER_IRQ_IN_MS),
+		     "Timer irq delay is not coherent: expected %ums / got %ums (margin +%ums)",
+		     timer_ms, elapsed_time, MARGIN_TIMER_IRQ_IN_MS);
+
+	TC_PRINT("Timer irq configured with %ums / got %ums (margin +%ums)\n",
+		 timer_ms, elapsed_time, MARGIN_TIMER_IRQ_IN_MS);
+}
+
+/**
+ * @brief Test stop timer
+ *
+ * Test processing:
+ * - Configure and start timer
+ * - Wait half of timer duration
+ * - Stop timer
+ * - Wait past the end of timer
+ * - Check if timer IRQ is not received
+ */
+ZTEST_F(lbm_porting, test_stop_timer)
+{
+	uint32_t timer_ms = 1000;
+	uint32_t time;
+
+	fixture->timer_irq_raised = false;
+
+	smtc_modem_hal_start_timer(timer_ms, timer_irq_callback, fixture);
+
+	/* Wait half of timer */
+	time = smtc_modem_hal_get_time_in_ms();
+	while ((smtc_modem_hal_get_time_in_ms() - time) < (timer_ms / 2)) {
+		k_sleep(K_MSEC(1));
+	}
+
+	smtc_modem_hal_stop_timer();
+
+	/* Wait past the end of timer */
+	time = smtc_modem_hal_get_time_in_ms();
+	while ((smtc_modem_hal_get_time_in_ms() - time) < (timer_ms + 500)) {
+		k_sleep(K_MSEC(1));
+	}
+
+	zassert_false(fixture->timer_irq_raised,
+		      "Timer irq raised while timer is stopped");
 }
