@@ -16,6 +16,7 @@
 #define NB_LOOP_TEST_SPI 2
 #define SYNC_WORD_NO_RADIO 0x21
 #define FREQ_NO_RADIO 868300000
+#define MARGIN_GET_TIME_IN_MS 1
 
 #define DEFAULT_RADIO_NODE DT_ALIAS(lora0)
 BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(DEFAULT_RADIO_NODE),
@@ -25,6 +26,9 @@ struct lbm_porting_fixture {
 	ralf_t modem_radio;
 	const struct device *transceiver;
 	volatile bool radio_irq_raised;
+	volatile bool irq_rx_timeout_raised;
+	volatile uint32_t irq_time_ms;
+	volatile uint32_t irq_time_s;
 	ralf_params_lora_t rx_lora_param;
 };
 
@@ -32,8 +36,44 @@ struct lbm_porting_fixture {
 static void radio_rx_irq_callback(void *context)
 {
 	struct lbm_porting_fixture *fixture = (struct lbm_porting_fixture *)context;
+	ral_irq_t radio_irq = 0;
 
 	fixture->radio_irq_raised = true;
+
+	/* Record time in thread context */
+	fixture->irq_time_ms = smtc_modem_hal_get_time_in_ms();
+
+	/* Get IRQ status to check for RX timeout */
+	ral_get_irq_status(&fixture->modem_radio.ral, &radio_irq);
+
+	if ((radio_irq & RAL_IRQ_RX_TIMEOUT) == RAL_IRQ_RX_TIMEOUT) {
+		fixture->irq_rx_timeout_raised = true;
+	}
+
+	/* Clear IRQ status */
+	ral_clear_irq_status(&fixture->modem_radio.ral, RAL_IRQ_ALL);
+
+	/* Shut down the TCXO */
+	smtc_modem_hal_stop_radio_tcxo();
+}
+
+/* Radio IRQ callback for time in seconds test (runs in thread context via HAL work queue) */
+static void radio_rx_irq_callback_get_time_in_s(void *context)
+{
+	struct lbm_porting_fixture *fixture = (struct lbm_porting_fixture *)context;
+	ral_irq_t radio_irq = 0;
+
+	fixture->radio_irq_raised = true;
+
+	/* Record time in seconds in thread context */
+	fixture->irq_time_s = smtc_modem_hal_get_time_in_s();
+
+	/* Get IRQ status to check for RX timeout */
+	ral_get_irq_status(&fixture->modem_radio.ral, &radio_irq);
+
+	if ((radio_irq & RAL_IRQ_RX_TIMEOUT) == RAL_IRQ_RX_TIMEOUT) {
+		fixture->irq_rx_timeout_raised = true;
+	}
 
 	/* Clear IRQ status */
 	ral_clear_irq_status(&fixture->modem_radio.ral, RAL_IRQ_ALL);
@@ -205,4 +245,157 @@ ZTEST_F(lbm_porting, test_radio_irq)
 	/* Check if IRQ was raised */
 	zassert_true(fixture->radio_irq_raised,
 		     "Timeout, radio irq not received");
+}
+
+/**
+ * @brief Test get time in seconds
+ *
+ * Test processing:
+ * - Reset, init and configure radio
+ * - Configure radio in reception mode with a timeout
+ * - Get start time
+ * - Wait for radio IRQ (get stop time in IRQ callback)
+ * - Check if time is coherent with the configured timeout
+ *
+ * Note: If radio IRQ received is not RX timeout, test is skipped
+ */
+ZTEST_F(lbm_porting, test_get_time_in_s)
+{
+	ral_status_t status;
+	uint32_t rx_timeout_in_ms = 5000;
+	uint32_t start_time_s;
+	uint32_t elapsed_time;
+
+	/* Reset flags */
+	fixture->radio_irq_raised = false;
+	fixture->irq_rx_timeout_raised = false;
+	fixture->rx_lora_param.symb_nb_timeout = 0;
+
+	/* Reset, init radio and put it in sleep mode */
+	status = reset_init_radio(fixture);
+	zassert_equal(status, RAL_STATUS_OK, "Could not reset/init radio: 0x%x", status);
+
+	/* Setup radio and IRQ - use callback that records time in seconds */
+	smtc_modem_hal_irq_config_radio_irq(radio_rx_irq_callback_get_time_in_s, fixture);
+	smtc_modem_hal_start_radio_tcxo();
+	smtc_modem_hal_set_ant_switch(false);
+
+	/* Setup LoRa parameters */
+	status = ralf_setup_lora(&fixture->modem_radio, &fixture->rx_lora_param);
+	zassert_equal(status, RAL_STATUS_OK, "ralf_setup_lora failed: 0x%x", status);
+
+	/* Configure IRQ parameters */
+	status = ral_set_dio_irq_params(&fixture->modem_radio.ral,
+					RAL_IRQ_RX_DONE | RAL_IRQ_RX_TIMEOUT |
+					RAL_IRQ_RX_HDR_ERROR | RAL_IRQ_RX_CRC_ERROR);
+	zassert_equal(status, RAL_STATUS_OK, "ral_set_dio_irq_params failed: 0x%x", status);
+
+	/* Set radio in RX mode */
+	status = ral_set_rx(&fixture->modem_radio.ral, rx_timeout_in_ms);
+	zassert_equal(status, RAL_STATUS_OK, "ral_set_rx failed: 0x%x", status);
+
+	/* Get start time */
+	start_time_s = smtc_modem_hal_get_time_in_s();
+
+	/* Wait for radio IRQ */
+	while (fixture->radio_irq_raised == false) {
+		k_sleep(K_MSEC(10));
+	}
+
+	/* Skip test if IRQ was not RX timeout (may need to relaunch) */
+	if (fixture->irq_rx_timeout_raised == false) {
+		ztest_test_skip();
+	}
+
+	/* Check elapsed time */
+	elapsed_time = fixture->irq_time_s - start_time_s;
+	zassert_equal(elapsed_time, rx_timeout_in_ms / 1000,
+		      "Time is not coherent: expected %us / got %us",
+		      rx_timeout_in_ms / 1000, elapsed_time);
+}
+
+/**
+ * @brief Test get time in milliseconds
+ *
+ * Test processing:
+ * - Reset, init and configure radio with a timeout symbol number
+ * - Get start time
+ * - Configure radio in reception mode
+ * - Wait for radio IRQ (get stop time in IRQ callback)
+ * - Check if time is coherent with the configured timeout symbol number
+ *
+ * Note: If radio IRQ received is not RX timeout, test is skipped
+ */
+ZTEST_F(lbm_porting, test_get_time_in_ms)
+{
+	ral_status_t status;
+	uint32_t start_time_ms;
+	uint32_t elapsed_time;
+	uint32_t symb_time_ms;
+	uint8_t wait_start_ms = 5;
+
+	/* Reset flags */
+	fixture->radio_irq_raised = false;
+	fixture->irq_rx_timeout_raised = false;
+
+	/*
+	 * Configure symbol timeout.
+	 * To avoid misalignment between symb timeout and real timeout,
+	 * use a number of symbols smaller than 63.
+	 */
+	fixture->rx_lora_param.symb_nb_timeout = 62;
+	fixture->rx_lora_param.mod_params.sf = RAL_LORA_SF12;
+	fixture->rx_lora_param.mod_params.bw = RAL_LORA_BW_125_KHZ;
+
+	/* Calculate expected symbol time: 2^SF / BW * symb_nb_timeout */
+	symb_time_ms = (uint32_t)(fixture->rx_lora_param.symb_nb_timeout *
+				  ((1 << 12) / 125.0));
+
+	/* Reset, init radio and put it in sleep mode */
+	status = reset_init_radio(fixture);
+	zassert_equal(status, RAL_STATUS_OK, "Could not reset/init radio: 0x%x", status);
+
+	/* Setup radio and IRQ */
+	smtc_modem_hal_irq_config_radio_irq(radio_rx_irq_callback, fixture);
+	smtc_modem_hal_start_radio_tcxo();
+	smtc_modem_hal_set_ant_switch(false);
+
+	/* Setup LoRa parameters */
+	status = ralf_setup_lora(&fixture->modem_radio, &fixture->rx_lora_param);
+	zassert_equal(status, RAL_STATUS_OK, "ralf_setup_lora failed: 0x%x", status);
+
+	/* Configure IRQ parameters */
+	status = ral_set_dio_irq_params(&fixture->modem_radio.ral,
+					RAL_IRQ_RX_DONE | RAL_IRQ_RX_TIMEOUT |
+					RAL_IRQ_RX_HDR_ERROR | RAL_IRQ_RX_CRC_ERROR);
+	zassert_equal(status, RAL_STATUS_OK, "ral_set_dio_irq_params failed: 0x%x", status);
+
+	/* Wait to align start time */
+	start_time_ms = smtc_modem_hal_get_time_in_ms() + wait_start_ms;
+	while (smtc_modem_hal_get_time_in_ms() < start_time_ms) {
+		/* Busy wait */
+	}
+
+	/* Set radio in RX mode with symbol timeout (timeout_in_ms = 0) */
+	status = ral_set_rx(&fixture->modem_radio.ral, 0);
+	zassert_equal(status, RAL_STATUS_OK, "ral_set_rx failed: 0x%x", status);
+
+	/* Wait for radio IRQ */
+	while (fixture->radio_irq_raised == false) {
+		k_sleep(K_MSEC(1));
+	}
+
+	/* Skip test if IRQ was not RX timeout (may need to relaunch) */
+	if (fixture->irq_rx_timeout_raised == false) {
+		ztest_test_skip();
+	}
+
+	/* Calculate elapsed time, compensating for TCXO startup delay */
+	elapsed_time = fixture->irq_time_ms - start_time_ms -
+		       smtc_modem_hal_get_radio_tcxo_startup_delay_ms();
+
+	/* Check elapsed time within margin */
+	zassert_within(elapsed_time, symb_time_ms, MARGIN_GET_TIME_IN_MS,
+		       "Time is not coherent: expected %ums / got %ums (margin +/-%ums)",
+		       symb_time_ms, elapsed_time, MARGIN_GET_TIME_IN_MS);
 }

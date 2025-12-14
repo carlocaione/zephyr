@@ -113,3 +113,17 @@ void smtc_modem_hal_stop_radio_tcxo(void)
 	 */
 }
 
+uint32_t smtc_modem_hal_get_time_in_s(void)
+{
+	return k_uptime_seconds();
+}
+
+uint32_t smtc_modem_hal_get_time_in_ms(void)
+{
+	return k_uptime_get_32();
+}
+
+uint32_t smtc_modem_hal_get_radio_tcxo_startup_delay_ms(void)
+{
+	return 0;
+}
