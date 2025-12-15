@@ -98,6 +98,131 @@ void smtc_modem_hal_init(const struct device *transceiver)
 	k_timer_init(&prv_timer_data.timer, hal_timer_callback, NULL);
 }
 
+/* -------------------------------------------------------------------------- */
+/* --- TIME MANAGEMENT ------------------------------------------------------ */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Provide the time since startup in seconds.
+ *
+ * @return Current system uptime in seconds
+ */
+uint32_t smtc_modem_hal_get_time_in_s(void)
+{
+	return k_uptime_seconds();
+}
+
+/**
+ * @brief Provide the time since startup in milliseconds.
+ *
+ * The returned value must monotonically increase all the way to 0xFFFFFFFF and
+ * then overflow to 0x00000000.
+ *
+ * @return Current system uptime in milliseconds
+ */
+uint32_t smtc_modem_hal_get_time_in_ms(void)
+{
+	return k_uptime_get_32();
+}
+
+/* -------------------------------------------------------------------------- */
+/* --- TIMER MANAGEMENT ----------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Start a timer that will expire at the requested time.
+ *
+ * Upon expiration, the provided callback is called with context as its sole
+ * argument. The callback is executed in an interrupt context, with interrupts
+ * disabled.
+ *
+ * @param [in] milliseconds Timer duration in milliseconds
+ * @param [in] callback     Callback function to be called when the timer expires
+ * @param [in] context      Context to be passed to the callback function
+ */
+void smtc_modem_hal_start_timer(const uint32_t milliseconds, callback_t callback, void *context)
+{
+	prv_timer_data.timer_cb = callback;
+	prv_timer_data.context = context;
+
+	k_timer_start(&prv_timer_data.timer, K_MSEC(milliseconds), K_NO_WAIT);
+}
+
+/**
+ * @brief Stop the timer that may have been started with smtc_modem_hal_start_timer.
+ */
+void smtc_modem_hal_stop_timer(void)
+{
+	k_timer_stop(&prv_timer_data.timer);
+}
+
+/* -------------------------------------------------------------------------- */
+/* --- IRQ MANAGEMENT ------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Disable the two interrupt sources that execute the LoRa Basics Modem
+ *        code: the timer, and the transceiver DIO interrupt source.
+ */
+void smtc_modem_hal_disable_modem_irq(void)
+{
+	prv_modem_irq_enabled = false;
+}
+
+/**
+ * @brief Enable the two interrupt sources that execute the LoRa Basics Modem
+ *        code: the timer, and the transceiver DIO interrupt source.
+ */
+void smtc_modem_hal_enable_modem_irq(void)
+{
+	prv_modem_irq_enabled = true;
+
+	if (prv_pending_timer_cb) {
+		prv_pending_timer_cb = false;
+		if (prv_timer_data.timer_cb != NULL) {
+			prv_timer_data.timer_cb(prv_timer_data.context);
+		}
+	}
+
+	if (prv_pending_dio_cb) {
+		prv_pending_dio_cb = false;
+		if (prv_cb_data.dio_cb != NULL) {
+			prv_cb_data.dio_cb(prv_cb_data.context);
+		}
+	}
+}
+
+/* -------------------------------------------------------------------------- */
+/* --- RANDOM NUMBER -------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Return a uniformly-distributed unsigned random integer from the closed
+ *        interval [val_1, val_2] or [val_2, val_1].
+ *
+ * @param [in] val_1 First boundary value
+ * @param [in] val_2 Second boundary value
+ *
+ * @return Random value in the range [min(val_1,val_2), max(val_1,val_2)]
+ */
+uint32_t smtc_modem_hal_get_random_nb_in_range(const uint32_t val_1, const uint32_t val_2)
+{
+	uint32_t min = MIN(val_1, val_2);
+	uint32_t max = MAX(val_1, val_2);
+	uint32_t range = max - min;
+
+	/* Handle full 32-bit range case */
+	if (range == UINT32_MAX) {
+		return sys_rand32_get();
+	}
+
+	return min + (sys_rand32_get() % (range + 1));
+}
+
+/* -------------------------------------------------------------------------- */
+/* --- RADIO ENVIRONMENT ---------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
+
 /**
  * @brief Store the callback and context argument that must be executed when a
  *        radio event occurs.
@@ -146,18 +271,6 @@ void smtc_modem_hal_start_radio_tcxo(void)
 }
 
 /**
- * @brief Set antenna switch for Tx operation or not.
- *
- * If no antenna switch is used then implement an empty command.
- *
- * @param [in] is_tx_on Set to true for Tx operation, false otherwise
- */
-void smtc_modem_hal_set_ant_switch(bool is_tx_on)
-{
-	/* No antenna switch is used. */
-}
-
-/**
  * @brief Power down the TCXO.
  *
  * If the TCXO is not controlled by the transceiver, stop the TCXO. If the TCXO
@@ -170,29 +283,6 @@ void smtc_modem_hal_stop_radio_tcxo(void)
 	 * We only support TCXO's that are wired to the transceiver. In such cases,
 	 * this function must be empty. See 5.26 of the porting guide.
 	 */
-}
-
-/**
- * @brief Provide the time since startup in seconds.
- *
- * @return Current system uptime in seconds
- */
-uint32_t smtc_modem_hal_get_time_in_s(void)
-{
-	return k_uptime_seconds();
-}
-
-/**
- * @brief Provide the time since startup in milliseconds.
- *
- * The returned value must monotonically increase all the way to 0xFFFFFFFF and
- * then overflow to 0x00000000.
- *
- * @return Current system uptime in milliseconds
- */
-uint32_t smtc_modem_hal_get_time_in_ms(void)
-{
-	return k_uptime_get_32();
 }
 
 /**
@@ -211,83 +301,13 @@ uint32_t smtc_modem_hal_get_radio_tcxo_startup_delay_ms(void)
 }
 
 /**
- * @brief Start a timer that will expire at the requested time.
+ * @brief Set antenna switch for Tx operation or not.
  *
- * Upon expiration, the provided callback is called with context as its sole
- * argument. The callback is executed in an interrupt context, with interrupts
- * disabled.
+ * If no antenna switch is used then implement an empty command.
  *
- * @param [in] milliseconds Timer duration in milliseconds
- * @param [in] callback     Callback function to be called when the timer expires
- * @param [in] context      Context to be passed to the callback function
+ * @param [in] is_tx_on Set to true for Tx operation, false otherwise
  */
-void smtc_modem_hal_start_timer(const uint32_t milliseconds, callback_t callback, void *context)
+void smtc_modem_hal_set_ant_switch(bool is_tx_on)
 {
-	prv_timer_data.timer_cb = callback;
-	prv_timer_data.context = context;
-
-	k_timer_start(&prv_timer_data.timer, K_MSEC(milliseconds), K_NO_WAIT);
-}
-
-/**
- * @brief Stop the timer that may have been started with smtc_modem_hal_start_timer.
- */
-void smtc_modem_hal_stop_timer(void)
-{
-	k_timer_stop(&prv_timer_data.timer);
-}
-
-/**
- * @brief Disable the two interrupt sources that execute the LoRa Basics Modem
- *        code: the timer, and the transceiver DIO interrupt source.
- */
-void smtc_modem_hal_disable_modem_irq(void)
-{
-	prv_modem_irq_enabled = false;
-}
-
-/**
- * @brief Enable the two interrupt sources that execute the LoRa Basics Modem
- *        code: the timer, and the transceiver DIO interrupt source.
- */
-void smtc_modem_hal_enable_modem_irq(void)
-{
-	prv_modem_irq_enabled = true;
-
-	if (prv_pending_timer_cb) {
-		prv_pending_timer_cb = false;
-		if (prv_timer_data.timer_cb != NULL) {
-			prv_timer_data.timer_cb(prv_timer_data.context);
-		}
-	}
-
-	if (prv_pending_dio_cb) {
-		prv_pending_dio_cb = false;
-		if (prv_cb_data.dio_cb != NULL) {
-			prv_cb_data.dio_cb(prv_cb_data.context);
-		}
-	}
-}
-
-/**
- * @brief Return a uniformly-distributed unsigned random integer from the closed
- *        interval [val_1, val_2] or [val_2, val_1].
- *
- * @param [in] val_1 First boundary value
- * @param [in] val_2 Second boundary value
- *
- * @return Random value in the range [min(val_1,val_2), max(val_1,val_2)]
- */
-uint32_t smtc_modem_hal_get_random_nb_in_range(const uint32_t val_1, const uint32_t val_2)
-{
-	uint32_t min = MIN(val_1, val_2);
-	uint32_t max = MAX(val_1, val_2);
-	uint32_t range = max - min;
-
-	/* Handle full 32-bit range case */
-	if (range == UINT32_MAX) {
-		return sys_rand32_get();
-	}
-
-	return min + (sys_rand32_get() % (range + 1));
+	/* No antenna switch is used. */
 }
