@@ -22,6 +22,7 @@
 #define MARGIN_GET_TIME_IN_MS 1
 #define MARGIN_TIMER_IRQ_IN_MS 2
 #define MARGIN_TIME_CONFIG_RADIO_IN_MS 8
+#define MARGIN_SLEEP_IN_MS 2
 
 /**
  * @brief Return test enumeration
@@ -847,4 +848,42 @@ ZTEST_F(lbm_porting, test_config_tx_radio)
 
 	zassert_equal(counter_nok, 0, "Failed test = %u / %u",
 		      counter_nok, NB_LOOP_TEST_CONFIG_RADIO);
+}
+
+/**
+ * @brief Test sleep time
+ *
+ * Test processing:
+ * - Get start time
+ * - Sleep for a defined duration
+ * - Get stop time
+ * - Check sleep time is accurate within margin
+ */
+ZTEST_F(lbm_porting, test_sleep_ms)
+{
+	ARG_UNUSED(fixture);
+
+	int32_t sleep_ms = 2000;
+	uint8_t wait_start_ms = 5;
+	uint32_t start_time_ms;
+	uint32_t stop_time_ms;
+	uint32_t elapsed_time;
+
+	/* Wait to align start time */
+	start_time_ms = smtc_modem_hal_get_time_in_ms() + wait_start_ms;
+	while (smtc_modem_hal_get_time_in_ms() < start_time_ms) {
+		/* Busy wait */
+	}
+
+	k_msleep(sleep_ms);
+
+	stop_time_ms = smtc_modem_hal_get_time_in_ms();
+	elapsed_time = stop_time_ms - start_time_ms;
+
+	zassert_true(abs((int)(elapsed_time - sleep_ms)) <= MARGIN_SLEEP_IN_MS,
+		     "Sleep time is not coherent: expected %ums / got %ums (margin +/-%ums)",
+		     sleep_ms, elapsed_time, MARGIN_SLEEP_IN_MS);
+
+	TC_PRINT("Sleep time expected %ums / got %ums (margin +/-%ums)\n",
+		 sleep_ms, elapsed_time, MARGIN_SLEEP_IN_MS);
 }
