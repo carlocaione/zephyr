@@ -570,3 +570,40 @@ ZTEST_F(lbm_porting, test_stop_timer)
 	zassert_false(fixture->timer_irq_raised,
 		      "Timer irq raised while timer is stopped");
 }
+
+/**
+ * @brief Test enable/disable irq
+ *
+ * Test processing:
+ * - Disable irq
+ * - Start timer with irq
+ * - Wait the end of timer
+ * - Check if timer irq is not raised
+ * - Enable irq
+ * - Check if timer irq is raised
+ */
+ZTEST_F(lbm_porting, test_disable_enable_irq)
+{
+	uint32_t timer_ms = 3000;
+	uint32_t time;
+
+	fixture->timer_irq_raised = false;
+
+	smtc_modem_hal_disable_modem_irq();
+
+	smtc_modem_hal_start_timer(timer_ms, timer_irq_callback, fixture);
+
+	/* Wait past the end of timer */
+	time = smtc_modem_hal_get_time_in_ms();
+	while ((smtc_modem_hal_get_time_in_ms() - time) < (timer_ms + 1000)) {
+		k_sleep(K_MSEC(1));
+	}
+
+	zassert_false(fixture->timer_irq_raised,
+		      "Timer irq raised while irq is disabled");
+
+	smtc_modem_hal_enable_modem_irq();
+
+	zassert_true(fixture->timer_irq_raised,
+		     "Timer irq not received while irq is reenabled");
+}

@@ -39,12 +39,21 @@ static struct timer_data_t prv_timer_data;
 
 static const struct device *prv_transceiver_dev;
 
+static bool prv_modem_irq_enabled = true;
+static bool prv_pending_timer_cb;
+static bool prv_pending_dio_cb;
+
 static K_THREAD_STACK_DEFINE(hal_workq_stack, HAL_WORKQ_STACK_SIZE);
 static struct k_work_q hal_workq;
 
 static void hal_irq_work_handler(struct k_work *work)
 {
 	struct cb_data_t *data = CONTAINER_OF(work, struct cb_data_t, work);
+
+	if (!prv_modem_irq_enabled) {
+		prv_pending_dio_cb = true;
+		return;
+	}
 
 	if (data->dio_cb != NULL) {
 		data->dio_cb(data->context);
@@ -61,6 +70,11 @@ static void hal_irq_callback(const struct device *port, struct gpio_callback *cb
 static void hal_timer_callback(struct k_timer *timer)
 {
 	struct timer_data_t *data = CONTAINER_OF(timer, struct timer_data_t, timer);
+
+	if (!prv_modem_irq_enabled) {
+		prv_pending_timer_cb = true;
+		return;
+	}
 
 	if (data->timer_cb != NULL) {
 		data->timer_cb(data->context);
@@ -159,3 +173,26 @@ void smtc_modem_hal_stop_timer(void)
 	k_timer_stop(&prv_timer_data.timer);
 }
 
+void smtc_modem_hal_disable_modem_irq(void)
+{
+	prv_modem_irq_enabled = false;
+}
+
+void smtc_modem_hal_enable_modem_irq(void)
+{
+	prv_modem_irq_enabled = true;
+
+	if (prv_pending_timer_cb) {
+		prv_pending_timer_cb = false;
+		if (prv_timer_data.timer_cb != NULL) {
+			prv_timer_data.timer_cb(prv_timer_data.context);
+		}
+	}
+
+	if (prv_pending_dio_cb) {
+		prv_pending_dio_cb = false;
+		if (prv_cb_data.dio_cb != NULL) {
+			prv_cb_data.dio_cb(prv_cb_data.context);
+		}
+	}
+}
