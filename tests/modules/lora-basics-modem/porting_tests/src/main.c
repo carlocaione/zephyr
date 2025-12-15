@@ -45,6 +45,7 @@ struct lbm_porting_fixture {
 	volatile uint32_t irq_time_ms;
 	volatile uint32_t irq_time_s;
 	ralf_params_lora_t rx_lora_param;
+	ralf_params_lora_t tx_lora_param;
 };
 
 /* Radio IRQ callback (runs in thread context via HAL work queue) */
@@ -106,6 +107,18 @@ static void timer_irq_callback(void *context)
 	fixture->timer_irq_raised = true;
 }
 
+/* Radio TX IRQ callback */
+static void radio_tx_irq_callback(void *context)
+{
+	struct lbm_porting_fixture *fixture = (struct lbm_porting_fixture *)context;
+
+	fixture->irq_time_ms = smtc_modem_hal_get_time_in_ms();
+	fixture->radio_irq_raised = true;
+
+	/* Clear IRQ status */
+	ral_clear_irq_status(&fixture->modem_radio.ral, RAL_IRQ_ALL);
+}
+
 /**
  * @brief Reset and initialize radio
  *
@@ -150,7 +163,7 @@ static void *lbm_porting_setup(void)
 		.transceiver = DEVICE_DT_GET(DEFAULT_RADIO_NODE),
 		.radio_irq_raised = false,
 
-		/* LoRa configurations TO NOT receive or transmit */
+		/* LoRa RX configurations TO NOT receive */
 		.rx_lora_param = {
 			.rf_freq_in_hz = FREQ_NO_RADIO,
 			.sync_word = SYNC_WORD_NO_RADIO,
@@ -167,6 +180,26 @@ static void *lbm_porting_setup(void)
 				.pld_len_in_bytes = 255,
 				.crc_is_on = false,
 				.invert_iq_is_on = true,
+			},
+		},
+
+		/* LoRa TX configurations TO NOT transmit */
+		.tx_lora_param = {
+			.rf_freq_in_hz = FREQ_NO_RADIO,
+			.sync_word = SYNC_WORD_NO_RADIO,
+			.output_pwr_in_dbm = 14,
+			.mod_params = {
+				.sf = RAL_LORA_SF12,
+				.bw = RAL_LORA_BW_125_KHZ,
+				.cr = RAL_LORA_CR_4_5,
+				.ldro = 0,
+			},
+			.pkt_params = {
+				.preamble_len_in_symb = 8,
+				.header_type = RAL_LORA_PKT_EXPLICIT,
+				.pld_len_in_bytes = 50,
+				.crc_is_on = true,
+				.invert_iq_is_on = false,
 			},
 		},
 	};
@@ -741,6 +774,70 @@ ZTEST_F(lbm_porting, test_config_rx_radio)
 
 		if (elapsed_time >= MARGIN_TIME_CONFIG_RADIO_IN_MS) {
 			TC_PRINT("Configuration of RX radio is too long: %ums (margin +%ums)\n",
+				 elapsed_time, MARGIN_TIME_CONFIG_RADIO_IN_MS);
+			counter_nok++;
+		}
+
+		smtc_modem_hal_stop_radio_tcxo();
+	}
+
+	zassert_equal(counter_nok, 0, "Failed test = %u / %u",
+		      counter_nok, NB_LOOP_TEST_CONFIG_RADIO);
+}
+
+/**
+ * @brief Test time to configure TX radio
+ *
+ * Test processing:
+ * - Reset and init radio
+ * - Configure radio IRQ
+ * - In a loop:
+ *   - Get start time
+ *   - Configure TX radio (TCXO, antenna switch, LoRa params, IRQ params, payload)
+ *   - Get stop time
+ *   - Check configuration time is within margin
+ */
+ZTEST_F(lbm_porting, test_config_tx_radio)
+{
+	ral_status_t status;
+	uint16_t counter_nok = 0;
+	uint16_t payload_size = 50;
+	uint8_t payload[50] = {0};
+
+	fixture->radio_irq_raised = false;
+
+	/* Reset, init radio and put it in sleep mode */
+	status = reset_init_radio(fixture);
+	zassert_equal(status, RAL_STATUS_OK, "Could not reset/init radio: 0x%x", status);
+
+	/* Setup radio IRQ callback */
+	smtc_modem_hal_irq_config_radio_irq(radio_tx_irq_callback, fixture);
+
+	for (uint16_t i = 0; i < NB_LOOP_TEST_CONFIG_RADIO; i++) {
+		uint32_t start_time_ms;
+		uint32_t elapsed_time;
+
+		fixture->radio_irq_raised = false;
+
+		start_time_ms = smtc_modem_hal_get_time_in_ms();
+
+		/* Configure radio for TX */
+		smtc_modem_hal_start_radio_tcxo();
+		smtc_modem_hal_set_ant_switch(true);
+
+		status = ralf_setup_lora(&fixture->modem_radio, &fixture->tx_lora_param);
+		zassert_equal(status, RAL_STATUS_OK, "ralf_setup_lora failed: 0x%x", status);
+
+		status = ral_set_dio_irq_params(&fixture->modem_radio.ral, RAL_IRQ_TX_DONE);
+		zassert_equal(status, RAL_STATUS_OK, "ral_set_dio_irq_params failed: 0x%x", status);
+
+		status = ral_set_pkt_payload(&fixture->modem_radio.ral, payload, payload_size);
+		zassert_equal(status, RAL_STATUS_OK, "ral_set_pkt_payload failed: 0x%x", status);
+
+		elapsed_time = smtc_modem_hal_get_time_in_ms() - start_time_ms;
+
+		if (elapsed_time >= MARGIN_TIME_CONFIG_RADIO_IN_MS) {
+			TC_PRINT("Configuration of TX radio is too long: %ums (margin +%ums)\n",
 				 elapsed_time, MARGIN_TIME_CONFIG_RADIO_IN_MS);
 			counter_nok++;
 		}
