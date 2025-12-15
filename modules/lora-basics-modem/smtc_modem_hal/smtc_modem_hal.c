@@ -9,6 +9,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>
 
 #include <lbm_common.h>
 #include <smtc_modem_hal.h>
@@ -195,4 +196,18 @@ void smtc_modem_hal_enable_modem_irq(void)
 			prv_cb_data.dio_cb(prv_cb_data.context);
 		}
 	}
+}
+
+uint32_t smtc_modem_hal_get_random_nb_in_range(const uint32_t val_1, const uint32_t val_2)
+{
+	uint32_t min = MIN(val_1, val_2);
+	uint32_t max = MAX(val_1, val_2);
+	uint32_t range = max - min;
+
+	/* Handle full 32-bit range case */
+	if (range == UINT32_MAX) {
+		return sys_rand32_get();
+	}
+
+	return min + (sys_rand32_get() % (range + 1));
 }

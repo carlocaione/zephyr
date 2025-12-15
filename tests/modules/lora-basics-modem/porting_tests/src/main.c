@@ -607,3 +607,82 @@ ZTEST_F(lbm_porting, test_disable_enable_irq)
 	zassert_true(fixture->timer_irq_raised,
 		     "Timer irq not received while irq is reenabled");
 }
+
+/**
+ * @brief Test get random numbers
+ *
+ * Test processing:
+ * 1) Get 2 random numbers in full range
+ *    - Check if numbers are not equal to 0 and are different
+ * 2) Get 2 random numbers in a defined range
+ *    - Check if numbers are different and in the defined range
+ * 3) Get random draw of numbers in a defined range
+ *    - Check if draw of each value is equivalent (uniform distribution)
+ */
+ZTEST_F(lbm_porting, test_random)
+{
+	ARG_UNUSED(fixture);
+
+	uint32_t rdom1, rdom2;
+	uint32_t range_min, range_max;
+
+	/* Test 1: Get random numbers in full range */
+	TC_PRINT("Get random nb: ");
+	rdom1 = smtc_modem_hal_get_random_nb_in_range(0, 0xFFFFFFFF);
+	rdom2 = smtc_modem_hal_get_random_nb_in_range(0, 0xFFFFFFFF);
+
+	zassert_true((rdom1 != 0) && (rdom2 != 0) && (rdom1 != rdom2),
+		     "Random numbers invalid: random1 = %u, random2 = %u", rdom1, rdom2);
+	TC_PRINT("OK - random1 = %u, random2 = %u\n", rdom1, rdom2);
+
+	/* Test 2: Get random numbers in defined range */
+	TC_PRINT("Get random nb in range: ");
+	range_min = 1;
+	range_max = 42;
+
+	rdom1 = smtc_modem_hal_get_random_nb_in_range(range_min, range_max);
+	rdom2 = smtc_modem_hal_get_random_nb_in_range(range_min, range_max);
+
+	zassert_true((rdom1 >= range_min) && (rdom1 <= range_max),
+		     "random1 = %u out of range [%u;%u]", rdom1, range_min, range_max);
+	zassert_true((rdom2 >= range_min) && (rdom2 <= range_max),
+		     "random2 = %u out of range [%u;%u]", rdom2, range_min, range_max);
+	zassert_true(rdom1 != rdom2,
+		     "random1 and random2 are equal: %u", rdom1);
+	TC_PRINT("OK - random1 = %u, random2 = %u in range [%u;%u]\n",
+		 rdom1, rdom2, range_min, range_max);
+
+	/* Test 3: Get random draw - check uniform distribution */
+	TC_PRINT("Get random draw: ");
+	range_min = 1;
+	range_max = 10;
+
+	uint32_t tab_counter_random[10] = {0};
+	uint32_t nb_draw = 100000;
+	uint32_t probability_draw = nb_draw / (range_max - range_min + 1);
+	/* Error margin = 5% of probability_draw */
+	int16_t margin = (probability_draw * 5) / 100;
+	bool distribution_ok = true;
+
+	for (uint32_t i = 0; i < nb_draw; i++) {
+		rdom1 = smtc_modem_hal_get_random_nb_in_range(range_min, range_max);
+		tab_counter_random[rdom1 - 1]++;
+	}
+
+	uint8_t tab_size = sizeof(tab_counter_random) / sizeof(uint32_t);
+
+	for (uint16_t i = 0; i < tab_size; i++) {
+		if (abs((int)(probability_draw - tab_counter_random[i])) > margin) {
+			TC_PRINT("Number %u drawn %u times, expected [%u;%u]\n",
+				 (i + 1), tab_counter_random[i],
+				 (probability_draw - margin),
+				 (probability_draw + margin));
+			distribution_ok = false;
+		}
+	}
+
+	zassert_true(distribution_ok,
+		     "Random distribution error margin > 5%%");
+	TC_PRINT("OK - Random draw of %u numbers between [%u;%u] range\n",
+		 nb_draw, range_min, range_max);
+}
