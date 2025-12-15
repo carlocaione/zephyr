@@ -98,6 +98,13 @@ void smtc_modem_hal_init(const struct device *transceiver)
 	k_timer_init(&prv_timer_data.timer, hal_timer_callback, NULL);
 }
 
+/**
+ * @brief Store the callback and context argument that must be executed when a
+ *        radio event occurs.
+ *
+ * @param [in] callback Callback that will be called when a radio event occurs
+ * @param [in] context  Context that will be passed to the callback
+ */
 void smtc_modem_hal_irq_config_radio_irq(callback_t dio_cb, void *context)
 {
 	int ret;
@@ -122,6 +129,14 @@ void smtc_modem_hal_irq_config_radio_irq(callback_t dio_cb, void *context)
 	}
 }
 
+/**
+ * @brief Power up the TCXO.
+ *
+ * If the TCXO is not controlled by the transceiver, power up the TCXO and then
+ * busy wait until the TCXO is running with the proper accuracy. If the TCXO is
+ * controlled by the transceiver or if no TCXO is present, implement an empty
+ * function.
+ */
 void smtc_modem_hal_start_radio_tcxo(void)
 {
 	/*
@@ -130,14 +145,25 @@ void smtc_modem_hal_start_radio_tcxo(void)
 	 */
 }
 
+/**
+ * @brief Set antenna switch for Tx operation or not.
+ *
+ * If no antenna switch is used then implement an empty command.
+ *
+ * @param [in] is_tx_on Set to true for Tx operation, false otherwise
+ */
 void smtc_modem_hal_set_ant_switch(bool is_tx_on)
 {
-	/*
-	 * From the porting guide:
-	 * If no antenna switch is used then implement an empty command.
-	 */
+	/* No antenna switch is used. */
 }
 
+/**
+ * @brief Power down the TCXO.
+ *
+ * If the TCXO is not controlled by the transceiver, stop the TCXO. If the TCXO
+ * is controlled by the transceiver or if no TCXO is present, implement an empty
+ * function.
+ */
 void smtc_modem_hal_stop_radio_tcxo(void)
 {
 	/*
@@ -146,21 +172,55 @@ void smtc_modem_hal_stop_radio_tcxo(void)
 	 */
 }
 
+/**
+ * @brief Provide the time since startup in seconds.
+ *
+ * @return Current system uptime in seconds
+ */
 uint32_t smtc_modem_hal_get_time_in_s(void)
 {
 	return k_uptime_seconds();
 }
 
+/**
+ * @brief Provide the time since startup in milliseconds.
+ *
+ * The returned value must monotonically increase all the way to 0xFFFFFFFF and
+ * then overflow to 0x00000000.
+ *
+ * @return Current system uptime in milliseconds
+ */
 uint32_t smtc_modem_hal_get_time_in_ms(void)
 {
 	return k_uptime_get_32();
 }
 
+/**
+ * @brief Return the time in milliseconds that the TCXO needs to start up with
+ *        the required accuracy.
+ *
+ * This does not implement a delay but is used to perform certain calculations
+ * so the modem accounts for startup latency when scheduling reception windows.
+ * Return zero if no TCXO is deployed.
+ *
+ * @return TCXO startup delay in milliseconds
+ */
 uint32_t smtc_modem_hal_get_radio_tcxo_startup_delay_ms(void)
 {
 	return 0;
 }
 
+/**
+ * @brief Start a timer that will expire at the requested time.
+ *
+ * Upon expiration, the provided callback is called with context as its sole
+ * argument. The callback is executed in an interrupt context, with interrupts
+ * disabled.
+ *
+ * @param [in] milliseconds Timer duration in milliseconds
+ * @param [in] callback     Callback function to be called when the timer expires
+ * @param [in] context      Context to be passed to the callback function
+ */
 void smtc_modem_hal_start_timer(const uint32_t milliseconds, callback_t callback, void *context)
 {
 	prv_timer_data.timer_cb = callback;
@@ -169,16 +229,27 @@ void smtc_modem_hal_start_timer(const uint32_t milliseconds, callback_t callback
 	k_timer_start(&prv_timer_data.timer, K_MSEC(milliseconds), K_NO_WAIT);
 }
 
+/**
+ * @brief Stop the timer that may have been started with smtc_modem_hal_start_timer.
+ */
 void smtc_modem_hal_stop_timer(void)
 {
 	k_timer_stop(&prv_timer_data.timer);
 }
 
+/**
+ * @brief Disable the two interrupt sources that execute the LoRa Basics Modem
+ *        code: the timer, and the transceiver DIO interrupt source.
+ */
 void smtc_modem_hal_disable_modem_irq(void)
 {
 	prv_modem_irq_enabled = false;
 }
 
+/**
+ * @brief Enable the two interrupt sources that execute the LoRa Basics Modem
+ *        code: the timer, and the transceiver DIO interrupt source.
+ */
 void smtc_modem_hal_enable_modem_irq(void)
 {
 	prv_modem_irq_enabled = true;
@@ -198,6 +269,15 @@ void smtc_modem_hal_enable_modem_irq(void)
 	}
 }
 
+/**
+ * @brief Return a uniformly-distributed unsigned random integer from the closed
+ *        interval [val_1, val_2] or [val_2, val_1].
+ *
+ * @param [in] val_1 First boundary value
+ * @param [in] val_2 Second boundary value
+ *
+ * @return Random value in the range [min(val_1,val_2), max(val_1,val_2)]
+ */
 uint32_t smtc_modem_hal_get_random_nb_in_range(const uint32_t val_1, const uint32_t val_2)
 {
 	uint32_t min = MIN(val_1, val_2);
