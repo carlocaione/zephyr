@@ -16,10 +16,12 @@
 #include <sx126x.h>
 
 #define NB_LOOP_TEST_SPI 2
+#define NB_LOOP_TEST_CONFIG_RADIO 2
 #define SYNC_WORD_NO_RADIO 0x21
 #define FREQ_NO_RADIO 868300000
 #define MARGIN_GET_TIME_IN_MS 1
 #define MARGIN_TIMER_IRQ_IN_MS 2
+#define MARGIN_TIME_CONFIG_RADIO_IN_MS 8
 
 /**
  * @brief Return test enumeration
@@ -685,4 +687,67 @@ ZTEST_F(lbm_porting, test_random)
 		     "Random distribution error margin > 5%%");
 	TC_PRINT("OK - Random draw of %u numbers between [%u;%u] range\n",
 		 nb_draw, range_min, range_max);
+}
+
+/**
+ * @brief Test time to configure RX radio
+ *
+ * Test processing:
+ * - Reset and init radio
+ * - Configure radio IRQ
+ * - In a loop:
+ *   - Get start time
+ *   - Configure RX radio (TCXO, antenna switch, LoRa params, IRQ params)
+ *   - Get stop time
+ *   - Check configuration time is within margin
+ */
+ZTEST_F(lbm_porting, test_config_rx_radio)
+{
+	ral_status_t status;
+	uint16_t counter_nok = 0;
+
+	fixture->radio_irq_raised = false;
+
+	/* Reset, init radio and put it in sleep mode */
+	status = reset_init_radio(fixture);
+	zassert_equal(status, RAL_STATUS_OK, "Could not reset/init radio: 0x%x", status);
+
+	k_msleep(500);
+
+	/* Setup radio IRQ callback */
+	smtc_modem_hal_irq_config_radio_irq(radio_rx_irq_callback, fixture);
+
+	for (uint16_t i = 0; i < NB_LOOP_TEST_CONFIG_RADIO; i++) {
+		uint32_t start_time_ms;
+		uint32_t elapsed_time;
+
+		fixture->radio_irq_raised = false;
+
+		start_time_ms = smtc_modem_hal_get_time_in_ms();
+
+		/* Configure radio for RX */
+		smtc_modem_hal_start_radio_tcxo();
+		smtc_modem_hal_set_ant_switch(false);
+
+		status = ralf_setup_lora(&fixture->modem_radio, &fixture->rx_lora_param);
+		zassert_equal(status, RAL_STATUS_OK, "ralf_setup_lora failed: 0x%x", status);
+
+		status = ral_set_dio_irq_params(&fixture->modem_radio.ral,
+						RAL_IRQ_RX_DONE | RAL_IRQ_RX_TIMEOUT |
+						RAL_IRQ_RX_HDR_ERROR | RAL_IRQ_RX_CRC_ERROR);
+		zassert_equal(status, RAL_STATUS_OK, "ral_set_dio_irq_params failed: 0x%x", status);
+
+		elapsed_time = smtc_modem_hal_get_time_in_ms() - start_time_ms;
+
+		if (elapsed_time >= MARGIN_TIME_CONFIG_RADIO_IN_MS) {
+			TC_PRINT("Configuration of RX radio is too long: %ums (margin +%ums)\n",
+				 elapsed_time, MARGIN_TIME_CONFIG_RADIO_IN_MS);
+			counter_nok++;
+		}
+
+		smtc_modem_hal_stop_radio_tcxo();
+	}
+
+	zassert_equal(counter_nok, 0, "Failed test = %u / %u",
+		      counter_nok, NB_LOOP_TEST_CONFIG_RADIO);
 }
