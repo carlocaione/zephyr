@@ -148,6 +148,9 @@ uint32_t smtc_modem_hal_get_radio_tcxo_startup_delay_ms(void)
 
 void smtc_modem_hal_start_timer(const uint32_t milliseconds, callback_t callback, void *context)
 {
+	prv_timer_data.timer_cb = callback;
+	prv_timer_data.context = context;
+
 	k_timer_start(&prv_timer_data.timer, K_MSEC(milliseconds), K_NO_WAIT);
 }
 

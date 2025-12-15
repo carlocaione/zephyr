@@ -288,8 +288,6 @@ static enum return_code_test test_get_time_in_s(struct lbm_porting_fixture *fixt
 	uint32_t start_time_s;
 	uint32_t elapsed_time;
 
-	TC_PRINT("Get time in seconds\n");
-
 	/* Reset flags */
 	fixture->radio_irq_raised = false;
 	fixture->irq_rx_timeout_raised = false;
@@ -377,8 +375,6 @@ static enum return_code_test test_get_time_in_ms(struct lbm_porting_fixture *fix
 	uint32_t elapsed_time;
 	uint32_t symb_time_ms;
 	uint8_t wait_start_ms = 5;
-
-	TC_PRINT("Get time in milliseconds\n");
 
 	/* Reset flags */
 	fixture->radio_irq_raised = false;
