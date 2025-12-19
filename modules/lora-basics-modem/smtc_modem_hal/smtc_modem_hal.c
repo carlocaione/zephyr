@@ -17,6 +17,9 @@
 #include <smtc_modem_hal.h>
 #include <smtc_modem_hal_ext.h>
 
+BUILD_ASSERT(IS_ENABLED(CONFIG_LORA_SX126X),
+	     "smtc_modem_hal requires SX126x radio");
+
 LOG_MODULE_REGISTER(smtc_modem_hal, CONFIG_LORA_LOG_LEVEL);
 
 #define HAL_WORKQ_STACK_SIZE 1024
@@ -33,6 +36,7 @@ struct cb_data_t {
 
 struct timer_data_t {
 	struct k_timer timer;
+	struct k_work work;
 	callback_t timer_cb;
 	void *context;
 };
@@ -70,9 +74,9 @@ static void hal_irq_callback(const struct device *port, struct gpio_callback *cb
 	k_work_submit_to_queue(&hal_workq, &data->work);
 }
 
-static void hal_timer_callback(struct k_timer *timer)
+static void hal_timer_work_handler(struct k_work *work)
 {
-	struct timer_data_t *data = CONTAINER_OF(timer, struct timer_data_t, timer);
+	struct timer_data_t *data = CONTAINER_OF(work, struct timer_data_t, work);
 
 	if (!prv_modem_irq_enabled) {
 		prv_pending_timer_cb = true;
@@ -82,6 +86,13 @@ static void hal_timer_callback(struct k_timer *timer)
 	if (data->timer_cb != NULL) {
 		data->timer_cb(data->context);
 	}
+}
+
+static void hal_timer_callback(struct k_timer *timer)
+{
+	struct timer_data_t *data = CONTAINER_OF(timer, struct timer_data_t, timer);
+
+	k_work_submit_to_queue(&hal_workq, &data->work);
 }
 
 void smtc_modem_hal_init(const struct device *transceiver)
@@ -97,6 +108,7 @@ void smtc_modem_hal_init(const struct device *transceiver)
 	k_thread_name_set(&hal_workq.thread, "lbm_hal_workq");
 
 	k_work_init(&prv_cb_data.work, hal_irq_work_handler);
+	k_work_init(&prv_timer_data.work, hal_timer_work_handler);
 	k_timer_init(&prv_timer_data.timer, hal_timer_callback, NULL);
 }
 
@@ -365,6 +377,7 @@ void smtc_modem_hal_irq_config_radio_irq(callback_t dio_cb, void *context)
 {
 	int ret;
 
+	__ASSERT(prv_transceiver_dev, "smtc_modem_hal_init must be called first");
 	__ASSERT(dio_cb, "DIO1 callback must be provided");
 
 	if (prv_cb_data.dio_cb != NULL) {
