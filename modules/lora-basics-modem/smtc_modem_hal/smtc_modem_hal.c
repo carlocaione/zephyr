@@ -377,9 +377,8 @@ void smtc_modem_hal_irq_config_radio_irq(callback_t dio_cb, void *context)
 	prv_cb_data.dio_cb = dio_cb;
 	prv_cb_data.context = context;
 
-	gpio_init_callback(&prv_cb_data.cb, hal_irq_callback, 0);
-
-	ret = lbm_driver_add_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb);
+	ret = lbm_driver_add_dio1_gpio_callback(prv_transceiver_dev, &prv_cb_data.cb,
+						hal_irq_callback);
 	if (ret < 0) {
 		LOG_ERR("Failed to add DIO1 GPIO callback: %d", ret);
 	}
