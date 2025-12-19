@@ -441,7 +441,8 @@ static void sx126x_dio1_callback(const struct device *dev, struct gpio_callback 
 }
 
 int lbm_driver_add_dio1_gpio_callback(const struct device *dev,
-				      struct gpio_callback *callback)
+				      struct gpio_callback *callback,
+				      gpio_callback_handler_t handler)
 {
 	const struct lbm_sx126x_config *config = dev->config;
 	int ret;
@@ -450,11 +451,11 @@ int lbm_driver_add_dio1_gpio_callback(const struct device *dev,
 		return -ENODEV;
 	}
 
-	if (callback == NULL) {
+	if (callback == NULL || handler == NULL) {
 		return -EINVAL;
 	}
 
-	callback->pin_mask = BIT(config->dio1.pin);
+	gpio_init_callback(callback, handler, BIT(config->dio1.pin));
 
 	ret = gpio_add_callback(config->dio1.port, callback);
 	if (ret < 0) {
