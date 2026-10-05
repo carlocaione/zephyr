@@ -18,11 +18,14 @@ By default the sample starts in **scanner** mode. Hold **button 0** during
 boot to select **sender** mode.
 
 The scanner demonstrates ``lora_cad_async()`` once, then runs ``lora_cad()``
-continuously and reports, for each window of 20 probes, how many found the
-channel busy. The sender enables ``LORA_CAD_MODE_LBT`` and transmits
-repeatedly with a long preamble. CAD flags a preamble's presence roughly
-once per packet, so the busy count stays a small fraction of the window
-even with the sender active.
+continuously. When CAD detects activity, it tries to receive and validate a
+packet. Each window of 20 probes reports CAD-positive probes separately from
+valid packets received, receive timeouts/errors, and invalid packets. A
+CAD-positive probe is not a measure of how long the channel was busy: a long
+packet preamble can trigger CAD only once, and CAD alone does not confirm that
+a full packet was received. The sender enables ``LORA_CAD_MODE_LBT`` and
+transmits repeatedly with a long preamble to give the scanner time to detect
+activity and receive the frame.
 
 Note that CAD detects LoRa modulation (chirps), not arbitrary RF energy, so
 the channel must be loaded with real LoRa transmissions; a continuous wave
@@ -50,10 +53,10 @@ Sample Output (scanner)
    [00:00:00.070,000] <inf> lora_cad: Asynchronous CAD probe
    [00:00:00.116,000] <inf> lora_cad: Async CAD result: channel clear
    [00:00:00.116,000] <inf> lora_cad: Continuous CAD scan
-   [00:00:01.018,000] <inf> lora_cad: channel busy on 1 of last 20 probes
-   [00:00:01.920,000] <inf> lora_cad: channel busy on 1 of last 20 probes
-   [00:00:02.821,000] <inf> lora_cad: channel busy on 0 of last 20 probes
-   [00:00:03.723,000] <inf> lora_cad: channel busy on 1 of last 20 probes
+   [00:00:00.900,000] <inf> lora_cad: Received packet 0 (RSSI -45 dBm, SNR 9 dB)
+   [00:00:01.800,000] <inf> lora_cad: CAD activity on 1/20 probes; received 1 packets, 0 RX timeouts, 0 RX errors, 0 invalid packets
+   [00:00:02.700,000] <inf> lora_cad: CAD activity on 1/20 probes; received 1 packets, 0 RX timeouts, 0 RX errors, 0 invalid packets
+   [00:00:03.600,000] <inf> lora_cad: CAD activity on 0/20 probes; received 0 packets, 0 RX timeouts, 0 RX errors, 0 invalid packets
 
 Sample Output (sender)
 ======================
