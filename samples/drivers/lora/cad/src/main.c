@@ -15,6 +15,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/lora.h>
 #include <zephyr/kernel.h>
+#include <string.h>
 
 #define LOG_LEVEL CONFIG_LOG_DEFAULT_LEVEL
 #include <zephyr/logging/log.h>
@@ -35,6 +36,7 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(DEFAULT_RADIO_NODE),
 #define TX_DATA_LEN 12
 #define SCAN_WINDOW 20
 #define TX_GAP_MS 50
+#define RX_TIMEOUT_MARGIN_MS 100
 
 static struct k_poll_signal cad_done_signal;
 
@@ -64,8 +66,13 @@ static int run_scanner(const struct device *lora_dev)
 			.symbol_num = LORA_CAD_SYMB_4,
 		},
 	};
+	uint8_t rx_data[TX_DATA_LEN];
 	struct k_poll_event event;
-	int busy = 0;
+	int cad_activity = 0;
+	int packets_received = 0;
+	int rx_timeouts = 0;
+	int rx_errors = 0;
+	int invalid_packets = 0;
 	int probes = 0;
 	int ret;
 
@@ -99,13 +106,43 @@ static int run_scanner(const struct device *lora_dev)
 		}
 
 		if (ret == 1) {
-			busy++;
+			int16_t rssi;
+			int8_t snr;
+			int rx_len;
+			uint32_t airtime_ms = lora_airtime(lora_dev, TX_DATA_LEN);
+
+			cad_activity++;
+			rx_len = lora_recv(lora_dev, rx_data, sizeof(rx_data),
+					   K_MSEC(airtime_ms + RX_TIMEOUT_MARGIN_MS), &rssi, &snr);
+			if (rx_len == -EAGAIN) {
+				rx_timeouts++;
+			} else if (rx_len == -EIO) {
+				rx_errors++;
+			} else if (rx_len < 0) {
+				LOG_ERR("lora_recv failed after CAD activity: %d", rx_len);
+				return rx_len;
+			} else if (rx_len != TX_DATA_LEN ||
+				   memcmp(rx_data, "lora cad   ", TX_DATA_LEN - 1) != 0 ||
+				   rx_data[TX_DATA_LEN - 1] < '0' ||
+				   rx_data[TX_DATA_LEN - 1] > '9') {
+				invalid_packets++;
+			} else {
+				packets_received++;
+				LOG_INF("Received packet %c (RSSI %d dBm, SNR %d dB)",
+					rx_data[TX_DATA_LEN - 1], rssi, snr);
+			}
 		}
 
 		if (++probes == SCAN_WINDOW) {
-			LOG_INF("channel busy on %d of last %d probes",
-				busy, SCAN_WINDOW);
-			busy = 0;
+			LOG_INF("CAD activity on %d/%d probes; received %d packets, "
+				"%d RX timeouts, %d RX errors, %d invalid packets",
+				cad_activity, SCAN_WINDOW, packets_received, rx_timeouts, rx_errors,
+				invalid_packets);
+			cad_activity = 0;
+			packets_received = 0;
+			rx_timeouts = 0;
+			rx_errors = 0;
+			invalid_packets = 0;
 			probes = 0;
 		}
 	}

@@ -20,9 +20,6 @@ LOG_MODULE_REGISTER(sx126x, CONFIG_LORA_LOG_LEVEL);
 
 #define SX126X_SF56_MIN_PREAMBLE_LEN	12
 
-/* Safety bound for the internal CAD (LBT / CAD-before-RX); CAD self-terminates. */
-#define SX126X_CAD_INTERNAL_TIMEOUT	K_SECONDS(2)
-
 static int bandwidth_to_reg(enum lora_signal_bandwidth bw, uint8_t *reg)
 {
 	switch (bw) {
@@ -176,6 +173,48 @@ static void sx126x_compute_cad_params(const struct device *dev,
 
 	*det_min = config->cad.detection_minimum ? config->cad.detection_minimum :
 		SX126X_CAD_DET_MIN_DEFAULT;
+}
+
+static int sx126x_cad_internal_timeout(const struct device *dev, k_timeout_t *timeout)
+{
+	const struct sx126x_data *data = dev->data;
+	uint32_t bw_hz;
+	uint32_t num_symbols;
+	uint64_t symbol_time_us;
+	uint64_t timeout_ms;
+	int ret;
+
+	switch (data->config.cad.symbol_num) {
+	case LORA_CAD_SYMB_1:
+		num_symbols = 1;
+		break;
+	case LORA_CAD_SYMB_4:
+		num_symbols = 4;
+		break;
+	case LORA_CAD_SYMB_8:
+		num_symbols = 8;
+		break;
+	case LORA_CAD_SYMB_16:
+		num_symbols = 16;
+		break;
+	case LORA_CAD_SYMB_2:
+	default:
+		num_symbols = 2;
+		break;
+	}
+
+	ret = bandwidth_to_hz(data->config.bandwidth, &bw_hz);
+	if (ret < 0) {
+		return ret;
+	}
+
+	symbol_time_us = DIV_ROUND_UP((uint64_t)BIT(data->config.datarate) * USEC_PER_SEC, bw_hz);
+
+	/* Allow the CAD window, radio processing time, and a one-second margin. */
+	timeout_ms = DIV_ROUND_UP(symbol_time_us * (num_symbols + 4), USEC_PER_MSEC) + 1000;
+
+	*timeout = K_MSEC(timeout_ms);
+	return 0;
 }
 
 static int sx126x_validate_config(const struct lora_modem_config *config)
@@ -892,6 +931,8 @@ static void sx126x_handle_irq_cad_done(const struct device *dev,
 {
 	struct sx126x_data *data = dev->data;
 	bool detected = (irq_status & SX126X_IRQ_CAD_ACTIVITY_DETECTED) != 0;
+	lora_cad_cb cb = data->cad_cb;
+	void *user_data = data->cad_cb_user_data;
 	struct sx126x_cad_result result = {
 		.detected = detected,
 		.status = 0,
@@ -899,21 +940,20 @@ static void sx126x_handle_irq_cad_done(const struct device *dev,
 
 	LOG_DBG("CAD done: %s", detected ? "activity" : "clear");
 
+	data->cad_cb = NULL;
+	data->cad_cb_user_data = NULL;
+
+	if (cb == NULL) {
+		/* Publish while CAD still owns the state, before another call can purge it. */
+		k_msgq_put(&data->cad_msgq, &result, K_NO_WAIT);
+	}
+
 	/* CAD self-terminates to STDBY_RC; return to rest (also resets state). */
 	sx126x_set_sleep(dev);
 
-	if (data->cad_cb != NULL) {
-		/* Async: clear cb before invoking so it may start a new op. */
-		lora_cad_cb cb = data->cad_cb;
-		void *user_data = data->cad_cb_user_data;
-
-		data->cad_cb = NULL;
-		data->cad_cb_user_data = NULL;
+	if (cb != NULL) {
 		cb(dev, detected, user_data);
-		return;
 	}
-
-	k_msgq_put(&data->cad_msgq, &result, K_NO_WAIT);
 }
 
 static void sx126x_irq_work_handler(struct k_work *work)
@@ -1160,6 +1200,7 @@ static int sx126x_lora_send_async(const struct device *dev,
 				  struct k_poll_signal *async)
 {
 	struct sx126x_data *data = dev->data;
+	k_timeout_t cad_timeout;
 	int ret;
 
 	if (!data->config_valid) {
@@ -1174,7 +1215,11 @@ static int sx126x_lora_send_async(const struct device *dev,
 
 	/* Listen Before Talk: refuse to transmit if the channel is busy. */
 	if (data->config.cad.mode == LORA_CAD_MODE_LBT) {
-		ret = sx126x_lora_cad(dev, SX126X_CAD_INTERNAL_TIMEOUT);
+		ret = sx126x_cad_internal_timeout(dev, &cad_timeout);
+		if (ret < 0) {
+			return ret;
+		}
+		ret = sx126x_lora_cad(dev, cad_timeout);
 		if (ret < 0) {
 			return ret;
 		}
@@ -1275,6 +1320,7 @@ static int sx126x_lora_recv(const struct device *dev, uint8_t *data_buf,
 {
 	struct sx126x_data *data = dev->data;
 	struct sx126x_rx_result result;
+	k_timeout_t cad_timeout;
 	uint32_t timeout_ms;
 	int ret;
 
@@ -1285,7 +1331,11 @@ static int sx126x_lora_recv(const struct device *dev, uint8_t *data_buf,
 
 	/* CAD before receive: return immediately if the channel is idle. */
 	if (data->config.cad.mode == LORA_CAD_MODE_RX) {
-		ret = sx126x_lora_cad(dev, SX126X_CAD_INTERNAL_TIMEOUT);
+		ret = sx126x_cad_internal_timeout(dev, &cad_timeout);
+		if (ret < 0) {
+			return ret;
+		}
+		ret = sx126x_lora_cad(dev, cad_timeout);
 		if (ret < 0) {
 			return ret;
 		}
