@@ -1698,16 +1698,16 @@ static int sx126x_init(const struct device *dev)
  */
 #ifdef CONFIG_LORA_SX126X_NATIVE_STANDALONE
 
-#define SX126X_INIT(inst, is_1261)						\
-	static struct sx126x_data sx126x_data_##inst;				\
+#define SX126X_INIT(inst, model)						\
+	static struct sx126x_data sx##model##_data_##inst;				\
 										\
-	static const struct sx126x_hal_config sx126x_config_##inst = {		\
+	static const struct sx126x_hal_config sx##model##_config_##inst = {		\
 		.spi = SPI_DT_SPEC_INST_GET(inst,				\
 					    SPI_WORD_SET(8) | SPI_TRANSFER_MSB), \
 		.reset = GPIO_DT_SPEC_INST_GET(inst, reset_gpios),		\
 		.busy = GPIO_DT_SPEC_INST_GET(inst, busy_gpios),		\
 		.dio1 = GPIO_DT_SPEC_INST_GET(inst, dio1_gpios),		\
-		.is_sx1261 = is_1261,						\
+		.is_sx1261 = (model == 1261),						\
 		.antenna_enable = GPIO_DT_SPEC_INST_GET_OR(inst,		\
 							   antenna_enable_gpios, \
 							   {0}),		\
@@ -1729,16 +1729,16 @@ static int sx126x_init(const struct device *dev)
 										\
 	DEVICE_DT_INST_DEFINE(inst, sx126x_init,				\
 			      PM_DEVICE_DT_INST_GET(inst),			\
-			      &sx126x_data_##inst, &sx126x_config_##inst,	\
+			      &sx##model##_data_##inst, &sx##model##_config_##inst,	\
 			      POST_KERNEL, CONFIG_LORA_INIT_PRIORITY,		\
 			      &sx126x_lora_api);
 
 #define DT_DRV_COMPAT semtech_sx1262
-DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, false)
+DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, 1262)
 
 #undef DT_DRV_COMPAT
 #define DT_DRV_COMPAT semtech_sx1261
-DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, true)
+DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, 1261)
 
 #undef DT_DRV_COMPAT
 
